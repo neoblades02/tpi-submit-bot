@@ -57,8 +57,28 @@ async function loginAndProcess(data) {
         const processedData = [];
 
         for (const record of data[0].rows) {
-            try {
-                console.log(`Processing record for: ${record['Client Name']}`);
+            let processingAttempt = 1;
+            const maxProcessingAttempts = 3;
+            let recordProcessed = false;
+            
+            while (!recordProcessed && processingAttempt <= maxProcessingAttempts) {
+                try {
+                    if (processingAttempt > 1) {
+                        console.log(`Processing record for: ${record['Client Name']} (attempt ${processingAttempt}/${maxProcessingAttempts})`);
+                    } else {
+                        console.log(`Processing record for: ${record['Client Name']}`);
+                    }
+
+                    // Ensure page is ready before processing this record
+                    const pageReady = await ensurePageReady(page);
+                    if (!pageReady) {
+                        console.log(`  - Page not ready, skipping record: ${record['Client Name']}`);
+                        record.status = 'error';
+                        record.Submitted = 'Error - Page Not Ready';
+                        record.InvoiceNumber = 'Not Generated';
+                        recordProcessed = true;
+                        break;
+                    }
 
                 // 1. Determine Reservation Title
                 const reservationTitle = record['Trip Description'].toLowerCase().includes('cruise') || record['Booking Description'].toLowerCase().includes('cruise')
@@ -97,8 +117,19 @@ async function loginAndProcess(data) {
 
                 if (isNoDataVisible) {
                     console.log(`  - Client not found: ${clientName} (No search results)`);
-                    // Click close button to close the popup
-                    await page.click('span.popupClose');
+                    // Click close button to close the popup - try multiple selectors
+                    try {
+                        await page.waitForSelector('span.popupClose[aria-label="Close"]', { timeout: 5000 });
+                        await page.click('span.popupClose[aria-label="Close"]');
+                    } catch (e) {
+                        console.log('  - Trying alternative close button selector...');
+                        try {
+                            await page.click('span.popupClose');
+                        } catch (e2) {
+                            console.log('  - Trying escape key...');
+                            await page.keyboard.press('Escape');
+                        }
+                    }
                     record.status = 'not submitted';
                     record.Submitted = 'Not Submitted';
                     record.InvoiceNumber = 'Not Generated';
@@ -127,6 +158,18 @@ async function loginAndProcess(data) {
                         await page.click('#zc-adv-btn-finish');
                         await page.waitForTimeout(2000);
 
+                        // Validate critical fields after client search (basic check only)
+                        const validationResult = await validateCriticalFieldsAfterClientSearch(page);
+                        if (!validationResult) {
+                            console.log('  ❌ Critical field validation failed, skipping record');
+                            record.status = 'error';
+                            record.Submitted = 'Error';
+                            record.InvoiceNumber = 'Error';
+                        } else {
+
+                        // Close any remaining popups before tour operator selection
+                        await closeCalendarPopupIfOpen(page);
+
                         // 4. Select Tour Operator
                         console.log(`  - Selecting tour operator: ${record['Tour Operator']}`);
                         await page.click('span.select2-chosen#select2-chosen-18');
@@ -143,51 +186,41 @@ async function loginAndProcess(data) {
                         } else {
                             console.log(`  - Selected tour operator: ${record['Tour Operator']}`);
 
-                            // 5. Select Region (United States)
+                            // 5. Select Region (United States) with validation
                             console.log(`  - Selecting region: United States`);
-                            await page.click('span.select2-chosen#select2-chosen-2');
-                            await page.waitForTimeout(1000);
-                            
-                            const regionInput = await page.waitForSelector('input[name="zc-sel2-inp-Destination"]', { timeout: 5000 });
-                            await regionInput.fill('United States');
-                            await page.waitForTimeout(1000);
-                            
-                            // Click on United States option
-                            await page.click('div.select2-result-label:has-text("United States")');
-                            await page.waitForTimeout(1000);
+                            await fillAndValidateRegion(page, 'United States');
 
-                            // 6. Fill Start Date
-                            console.log(`  - Setting start date: ${record['Booking Start Date']}`);
-                            await page.fill('#Start_Date', formatDate(record['Booking Start Date']));
+                            // 6. Fill Start Date with validation
+                            const startDate = formatDate(record['Booking Start Date']);
+                            console.log(`  - Setting start date: ${startDate}`);
+                            await fillAndValidateField(page, '#Start_Date', startDate, 'Start Date');
 
-                            // 7. Fill End Date
-                            console.log(`  - Setting end date: ${record['Booking End Date']}`);
-                            await page.fill('#End_Date', formatDate(record['Booking End Date']));
+                            // 7. Fill End Date with validation
+                            const endDate = formatDate(record['Booking End Date']);
+                            console.log(`  - Setting end date: ${endDate}`);
+                            await fillAndValidateField(page, '#End_Date', endDate, 'End Date');
 
-                            // 8. Fill Package Price
-                            console.log(`  - Setting package price: ${record['Package Price']}`);
-                            await page.fill('#zc-Total_Price', record['Package Price'].replace(/,/g, ''));
-
-                            // 9. Fill Expected Commission
-                            console.log(`  - Setting expected commission: ${record['Commission Projected']}`);
-                            await page.fill('#zc-Expected_Commission', record['Commission Projected'].replace(/,/g, ''));
-
-                            // 10. Click the 'Submit and Duplicate' button to submit the form
-                            await page.click('input[name="Submit_and_Duplicate"]');
-                            console.log('  - Clicked Submit and Duplicate button.');
-
-                            // Wait for the form to process and popup to appear (5-10 seconds)
-                            await page.waitForTimeout(8000);
-
-                            // Handle the popup by clicking OK button
+                            // 8. Fill Package Price with validation
                             try {
-                                await page.waitForSelector('#Ok', { timeout: 5000 });
-                                await page.click('#Ok');
-                                console.log('  - Clicked OK on popup.');
-                                await page.waitForTimeout(2000);
+                                const packagePrice = record['Package Price'].replace(/,/g, '');
+                                console.log(`  - Setting package price: ${packagePrice}`);
+                                await fillAndValidateField(page, '#zc-Total_Price', packagePrice, 'Package Price');
                             } catch (e) {
-                                console.log('  - No popup appeared or OK button not found.');
+                                console.log(`  ⚠️  Warning: Package Price filling failed: ${e.message}`);
                             }
+
+                            // 9. Fill Expected Commission with validation
+                            try {
+                                const expectedCommission = record['Commission Projected'].replace(/,/g, '');
+                                console.log(`  - Setting expected commission: ${expectedCommission}`);
+                                await fillAndValidateField(page, '#zc-Expected_Commission', expectedCommission, 'Expected Commission');
+                            } catch (e) {
+                                console.log(`  ⚠️  Warning: Expected Commission filling failed: ${e.message}`);
+                            }
+
+                            // 10. Submit the form with human-like interaction
+                            console.log('  - Submitting form...');
+                            await submitFormHumanLike(page);
 
                             // Extract invoice number from reservation title
                             try {
@@ -213,28 +246,90 @@ async function loginAndProcess(data) {
                             record.status = 'submitted';
                             record.Submitted = 'Submitted';
                         }
+                        }
                     } else {
                         console.log(`  - Client not found: ${clientName} (No matching client in results)`);
-                        // Click close button to close the popup
-                        await page.click('span.popupClose');
+                        // Click close button to close the popup - try multiple selectors
+                        try {
+                            await page.waitForSelector('span.popupClose[aria-label="Close"]', { timeout: 5000 });
+                            await page.click('span.popupClose[aria-label="Close"]');
+                        } catch (e) {
+                            console.log('  - Trying alternative close button selector...');
+                            try {
+                                await page.click('span.popupClose');
+                            } catch (e2) {
+                                console.log('  - Trying escape key...');
+                                await page.keyboard.press('Escape');
+                            }
+                        }
                         record.status = 'not submitted';
                         record.Submitted = 'Not Submitted';
                         record.InvoiceNumber = 'Not Generated';
                     }
                 }
 
-                // Navigate back to fresh form for next record
-                if (data[0].rows.indexOf(record) < data[0].rows.length - 1) {
-                    await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
-                    await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
-                }
+                // Refresh form page after successful submission to ensure clean state for next record
+                console.log('  🔄 Refreshing form page to start fresh...');
+                await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                console.log('  ✅ Form page refreshed and ready for next operation');
 
-            } catch (e) {
-                console.error(`Error processing record for ${record['Client Name']}:`, e);
-                record.status = 'error';
-                record.Submitted = 'Error';
-                record.InvoiceNumber = 'Error';
+                    // If we reach here, record was processed successfully
+                    recordProcessed = true;
+
+                } catch (e) {
+                    console.error(`Error processing record for ${record['Client Name']}:`, e);
+                    
+                    // Check if this is a browser crash or timeout
+                    if (isBrowserCrashed(e)) {
+                        console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
+                        
+                        // Attempt to recover from browser crash
+                        const recoverySuccess = await recoverFromBrowserIssue(page, record, 'crash', processingAttempt);
+                        
+                        if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
+                            console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
+                            processingAttempt++;
+                            continue; // Retry the record
+                        } else {
+                            console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
+                            record.status = 'error';
+                            record.Submitted = 'Error - Browser Crash';
+                            record.InvoiceNumber = 'Error';
+                            recordProcessed = true;
+                        }
+                    } else if (isBrowserTimeout(e)) {
+                        console.log(`  ⏰ Browser timeout detected for ${record['Client Name']}`);
+                        
+                        // Attempt to recover from browser timeout
+                        const recoverySuccess = await recoverFromBrowserIssue(page, record, 'timeout', processingAttempt);
+                        
+                        if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
+                            console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
+                            processingAttempt++;
+                            continue; // Retry the record
+                        } else {
+                            console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
+                            record.status = 'error';
+                            record.Submitted = 'Error - Browser Timeout';
+                            record.InvoiceNumber = 'Error';
+                            recordProcessed = true;
+                        }
+                    } else {
+                        // Non-crash/timeout error, mark as error and move on
+                        record.status = 'error';
+                        record.Submitted = 'Error';
+                        record.InvoiceNumber = 'Error';
+                        recordProcessed = true;
+                    }
+                }
+                
+                // Increment attempt counter for non-crash errors
+                if (!recordProcessed) {
+                    processingAttempt++;
+                }
             }
+            
             processedData.push(record);
         }
 
@@ -254,43 +349,60 @@ async function loginAndProcess(data) {
     }
 }
 
-// Helper function to search and select tour operator with scrolling
+// Helper function to search and select tour operator with progressive word search
 async function searchAndSelectTourOperator(page, tourOperator) {
     try {
-        // Wait for the dropdown to be visible
-        await page.waitForSelector('ul.select2-results', { timeout: 10000 });
+        console.log(`    🔍 Searching for tour operator: ${tourOperator}`);
         
-        let found = false;
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        while (!found && attempts < maxAttempts) {
-            // Get all visible options
-            const options = await page.locator('ul.select2-results li.select2-result').all();
+        // Wait for the search input field
+        await page.waitForSelector('input[name="zc-sel2-inp-Vendor"]', { timeout: 10000 });
+        
+        // Split tour operator into words for progressive search
+        const words = tourOperator.trim().split(/\s+/);
+        
+        // Try progressive word search: 1 word, then 2 words, then 3, etc.
+        for (let wordCount = 1; wordCount <= words.length; wordCount++) {
+            const searchTerm = words.slice(0, wordCount).join(' ');
+            console.log(`    📝 Trying search term: "${searchTerm}"`);
+            
+            // Clear and type the search term
+            await page.fill('input[name="zc-sel2-inp-Vendor"]', '');
+            await page.fill('input[name="zc-sel2-inp-Vendor"]', searchTerm);
+            await page.waitForTimeout(1500); // Wait for search results to load
+            
+            // Wait for results to appear
+            try {
+                await page.waitForSelector('ul#select2-results-18 li.select2-result', { timeout: 3000 });
+            } catch (e) {
+                console.log(`    ❌ No results found for "${searchTerm}"`);
+                continue;
+            }
+            
+            // Check if we found exact or partial matches in the dropdown
+            const options = await page.locator('ul#select2-results-18 li.select2-result').all();
             
             for (const option of options) {
                 const text = await option.innerText();
-                if (text.toLowerCase().includes(tourOperator.toLowerCase())) {
+                const cleanText = text.toLowerCase().trim();
+                const cleanTourOperator = tourOperator.toLowerCase().trim();
+                
+                // Check for exact match or if tour operator name is contained in the result
+                if (cleanText.includes(cleanTourOperator) || cleanTourOperator.includes(cleanText.replace(/\s*\([^)]*\)\s*/g, '').trim())) {
+                    console.log(`    ✅ Found match: "${text}" for search "${searchTerm}"`);
                     await option.click();
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found) {
-                // Scroll down to load more options
-                const lastOption = options[options.length - 1];
-                if (lastOption) {
-                    await lastOption.scrollIntoViewIfNeeded();
                     await page.waitForTimeout(1000);
+                    return true;
                 }
-                attempts++;
             }
+            
+            console.log(`    ⚠️  No match found in results for "${searchTerm}"`);
         }
-
-        return found;
+        
+        console.log(`    ❌ Tour operator "${tourOperator}" not found after trying all word combinations`);
+        return false;
+        
     } catch (error) {
-        console.error('Error searching for tour operator:', error);
+        console.error(`    💥 Error searching for tour operator "${tourOperator}":`, error);
         return false;
     }
 }
@@ -313,6 +425,407 @@ function formatDate(dateString) {
     } catch (error) {
         console.error('Error formatting date:', error);
         return dateString; // Return original if formatting fails
+    }
+}
+
+// Helper function to fill and validate form fields with human-like interactions
+async function fillAndValidateField(page, selector, value, fieldName, maxRetries = 3) {
+    // Explicitly define date field selectors to avoid any clicking
+    const dateFieldSelectors = ['#Start_Date', '#End_Date'];
+    const isDateField = dateFieldSelectors.includes(selector);
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`    📝 Filling ${fieldName} (attempt ${attempt}/${maxRetries})`);
+            
+            // Close any calendar popup before attempting to fill fields
+            await closeCalendarPopupIfOpen(page);
+            
+            if (isDateField) {
+                // For date fields, ONLY use page.fill() - NO clicking to prevent calendar popup
+                console.log(`    📅 Using direct fill for date field: ${selector}`);
+                await page.fill(selector, ''); // Clear first
+                await page.fill(selector, value); // Then fill
+                await page.waitForTimeout(500 + Math.random() * 300);
+            } else {
+                // For non-date fields, use reliable fill method
+                console.log(`    💰 Using reliable fill for field: ${selector}`);
+                await page.fill(selector, ''); // Clear first
+                await page.fill(selector, value); // Then fill
+                await page.waitForTimeout(300 + Math.random() * 200);
+            }
+            
+            // Validate the field was filled correctly
+            const actualValue = await page.inputValue(selector);
+            if (actualValue === value) {
+                console.log(`    ✅ ${fieldName} validated successfully: "${actualValue}"`);
+                return true;
+            } else {
+                console.log(`    ⚠️  ${fieldName} validation failed. Expected: "${value}", Got: "${actualValue}"`);
+                if (attempt === maxRetries) {
+                    console.log(`    ❌ ${fieldName} failed after ${maxRetries} attempts`);
+                    return false;
+                }
+                await page.waitForTimeout(1000);
+            }
+        } catch (error) {
+            console.log(`    💥 Error filling ${fieldName} (attempt ${attempt}): ${error.message}`);
+            if (attempt === maxRetries) {
+                return false;
+            }
+            await page.waitForTimeout(1000);
+        }
+    }
+    return false;
+}
+
+// Helper function to select region with validation
+async function fillAndValidateRegion(page, regionName, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`    🌍 Selecting region: ${regionName} (attempt ${attempt}/${maxRetries})`);
+            
+            // Click the region dropdown with human-like delay
+            await page.click('span.select2-chosen#select2-chosen-2');
+            await page.waitForTimeout(500 + Math.random() * 300);
+            
+            // Wait for input field and type region name
+            const regionInput = await page.waitForSelector('input[name="zc-sel2-inp-Destination"]', { timeout: 5000 });
+            await regionInput.fill(regionName);
+            await page.waitForTimeout(800 + Math.random() * 400);
+            
+            // Click on the region option
+            await page.click(`div.select2-result-label:has-text("${regionName}")`);
+            await page.waitForTimeout(600 + Math.random() * 300);
+            
+            // Validate the selection
+            try {
+                const selectedText = await page.textContent('span.select2-chosen#select2-chosen-2');
+                if (selectedText && selectedText.includes(regionName)) {
+                    console.log(`    ✅ Region selected successfully: "${selectedText}"`);
+                    return true;
+                } else {
+                    console.log(`    ⚠️  Region validation failed. Expected: "${regionName}", Got: "${selectedText}"`);
+                }
+            } catch (e) {
+                console.log(`    ⚠️  Could not validate region selection`);
+            }
+            
+            if (attempt === maxRetries) {
+                console.log(`    ❌ Region selection failed after ${maxRetries} attempts`);
+                return false;
+            }
+            await page.waitForTimeout(1000);
+            
+        } catch (error) {
+            console.log(`    💥 Error selecting region (attempt ${attempt}): ${error.message}`);
+            if (attempt === maxRetries) {
+                return false;
+            }
+            await page.waitForTimeout(1000);
+        }
+    }
+    return false;
+}
+
+
+
+// Helper function to ensure page is ready for next record
+async function ensurePageReady(page, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`  🔄 Checking page state (attempt ${attempt}/${maxRetries})`);
+            
+            // Wait for any overlays or popups to disappear
+            await page.waitForTimeout(2000);
+            
+            // Check if main form elements are accessible
+            await page.waitForSelector('#zc-Reservation_Title', { timeout: 5000, state: 'visible' });
+            await page.waitForSelector('span.select2-chosen#select2-chosen-18', { timeout: 5000, state: 'visible' });
+            
+            // Try to interact with a simple element to verify page responsiveness
+            const titleElement = await page.locator('#zc-Reservation_Title');
+            await titleElement.focus({ timeout: 3000 });
+            
+            console.log('  ✅ Page is ready for next record');
+            return true;
+            
+        } catch (error) {
+            console.log(`  ⚠️  Page not ready (attempt ${attempt}): ${error.message}`);
+            if (attempt === maxRetries) {
+                console.log('  ❌ Page state verification failed');
+                return false;
+            }
+            await page.waitForTimeout(3000);
+        }
+    }
+    return false;
+}
+
+// Helper function to submit form with human-like interaction and validation
+async function submitFormHumanLike(page, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`    📤 Submitting form (attempt ${attempt}/${maxRetries})`);
+            
+            // Human-like pause before clicking submit
+            await page.waitForTimeout(1000 + Math.random() * 1000);
+            
+            // Click the Submit and Duplicate button
+            await page.click('input[name="Submit_and_Duplicate"]');
+            console.log('    ✅ Clicked Submit and Duplicate button');
+            
+            // Wait for form processing with human-like patience
+            await page.waitForTimeout(6000 + Math.random() * 4000); // 6-10 seconds
+            
+            // Handle the confirmation popup
+            try {
+                await page.waitForSelector('#Ok', { timeout: 8000 });
+                await page.waitForTimeout(500 + Math.random() * 500); // Human-like pause before clicking OK
+                await page.click('#Ok');
+                console.log('    ✅ Clicked OK on confirmation popup');
+                
+                // Wait for page to process the submission
+                await page.waitForTimeout(2000 + Math.random() * 1000);
+                return true;
+                
+            } catch (e) {
+                console.log('    ⚠️  No confirmation popup appeared - form may have submitted without popup');
+                
+                // Check if form was submitted by looking for changes in the page
+                try {
+                    await page.waitForTimeout(2000);
+                    const currentUrl = page.url();
+                    if (currentUrl.includes('CORE')) {
+                        console.log('    ✅ Form appears to have submitted successfully');
+                        return true;
+                    }
+                } catch (urlError) {
+                    console.log('    ⚠️  Could not verify form submission by URL');
+                }
+                
+                if (attempt === maxRetries) {
+                    console.log('    ❌ No confirmation popup found after submit');
+                    return false;
+                }
+            }
+            
+        } catch (error) {
+            console.log(`    💥 Error submitting form (attempt ${attempt}): ${error.message}`);
+            if (attempt === maxRetries) {
+                return false;
+            }
+            await page.waitForTimeout(2000); // Wait before retry
+        }
+    }
+    return false;
+}
+
+// Helper function to validate critical form fields after client search (basic check only)
+async function validateCriticalFieldsAfterClientSearch(page) {
+    try {
+        console.log('  🔍 Validating critical fields after client search...');
+        
+        // First, close any calendar popup that might be blocking interactions
+        await closeCalendarPopupIfOpen(page);
+        
+        // Check only reservation title and booking number (the most critical ones)
+        const reservationTitleValue = await page.inputValue('#zc-Reservation_Title');
+        const bookingNumberValue = await page.inputValue('#zc-Reservation_Number');
+        
+        const titleOk = reservationTitleValue && reservationTitleValue.trim() !== '';
+        const bookingOk = bookingNumberValue && bookingNumberValue.trim() !== '';
+        
+        if (titleOk && bookingOk) {
+            console.log('  ✅ Critical fields validated - reservation title and booking number intact');
+        } else {
+            console.log('  ⚠️  Critical fields may have been cleared - proceeding with caution');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('  ❌ Error during critical field validation:', error);
+        return false;
+    }
+}
+
+// Helper function to close any active calendar popups and remove freezer overlay
+async function closeCalendarPopupIfOpen(page) {
+    try {
+        console.log('    🗓️ Checking for active calendar popups...');
+        
+        // Check if freezer div is present (indicates modal/popup is open)
+        const freezerDiv = await page.locator('div.zc-freezer').first();
+        const isFreezerVisible = await freezerDiv.isVisible().catch(() => false);
+        
+        if (isFreezerVisible) {
+            console.log('    ⚠️  Calendar popup detected (freezer div active), closing...');
+            
+            // Try multiple methods to close the calendar popup
+            // Method 1: Press Escape key
+            await page.keyboard.press('Escape');
+            await page.waitForTimeout(500);
+            
+            // Check if freezer is still there
+            const stillFrozen = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
+            
+            if (stillFrozen) {
+                console.log('    🔄 Escape didn\'t work, trying to click outside...');
+                // Method 2: Click outside the popup area
+                await page.click('body', { position: { x: 50, y: 50 } });
+                await page.waitForTimeout(500);
+            }
+            
+            // Check again
+            const finalCheck = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
+            if (finalCheck) {
+                console.log('    🔄 Still frozen, trying to click close button...');
+                // Method 3: Try to find and click any close button
+                try {
+                    await page.click('[aria-label="Close"]', { timeout: 2000 });
+                } catch (e) {
+                    try {
+                        await page.click('.close', { timeout: 2000 });
+                    } catch (e2) {
+                        // Final attempt - multiple escape presses
+                        await page.keyboard.press('Escape');
+                        await page.keyboard.press('Escape');
+                        await page.waitForTimeout(1000);
+                    }
+                }
+            }
+            
+            // Wait for freezer to disappear
+            try {
+                await page.waitForSelector('div.zc-freezer', { state: 'hidden', timeout: 3000 });
+                console.log('    ✅ Calendar popup closed successfully');
+            } catch (e) {
+                console.log('    ⚠️  Calendar popup may still be active');
+            }
+            
+        } else {
+            console.log('    ✅ No calendar popup detected');
+        }
+        
+        // Add a small delay to ensure page is stable
+        await page.waitForTimeout(500);
+        return true;
+        
+    } catch (error) {
+        console.log('    ⚠️  Error checking/closing calendar popup:', error.message);
+        return false;
+    }
+}
+
+// Helper function to detect if browser/page has crashed
+function isBrowserCrashed(error) {
+    const crashMessages = [
+        'Target page, context or browser has been closed',
+        'Page closed',
+        'Browser closed',
+        'Context closed',
+        'Protocol error',
+        'Connection closed'
+    ];
+    
+    return crashMessages.some(msg => error.message.includes(msg));
+}
+
+// Helper function to detect if browser/page has timed out (unresponsive)
+function isBrowserTimeout(error) {
+    const timeoutMessages = [
+        'Timeout',
+        'timeout',
+        'exceeded',
+        'waiting for',
+        'locator',
+        'element to be visible',
+        'element to be enabled',
+        'intercepts pointer events',
+        'waiting for element'
+    ];
+    
+    return timeoutMessages.some(msg => error.message.includes(msg));
+}
+
+// Helper function to recover from browser crash or timeout
+async function recoverFromBrowserIssue(page, record, issueType, attempt = 1, maxAttempts = 2) {
+    try {
+        console.log(`  🔄 Browser ${issueType} detected, attempting recovery (attempt ${attempt}/${maxAttempts})...`);
+        
+        if (attempt > maxAttempts) {
+            console.log(`  ❌ Maximum recovery attempts reached for ${record['Client Name']}`);
+            return false;
+        }
+        
+        // For timeouts, try to clear any blocking elements first
+        if (issueType === 'timeout') {
+            console.log('  🔄 Timeout detected, attempting to clear blocking elements...');
+            try {
+                // Close any calendar popups that might be blocking
+                await closeCalendarPopupIfOpen(page);
+                
+                // Try multiple escape keys to close any modals/popups
+                await page.keyboard.press('Escape');
+                await page.keyboard.press('Escape');
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(1000);
+                
+                // Test if page is responsive now
+                await page.waitForSelector('#zc-Reservation_Title', { timeout: 5000 });
+                console.log('  ✅ Page responsive after clearing blocking elements');
+                return true;
+            } catch (e) {
+                console.log('  🔄 Page still unresponsive, attempting refresh...');
+            }
+        }
+        
+        // Check if page is still responsive (for crashes)
+        if (issueType === 'crash') {
+            try {
+                await page.waitForTimeout(1000);
+                await page.url(); // This will throw if page is closed
+                console.log('  ✅ Page is actually still responsive, continuing...');
+                return true;
+            } catch (e) {
+                console.log('  🔄 Page is indeed crashed, attempting to refresh...');
+            }
+        }
+        
+        // Try to refresh the page
+        try {
+            console.log('  🔄 Attempting page reload...');
+            await page.reload({ waitUntil: 'networkidle', timeout: 15000 });
+            await page.waitForTimeout(3000);
+            console.log('  🔄 Page reloaded, checking for login state...');
+        } catch (e) {
+            console.log('  🔄 Reload failed, navigating to Quick Submit form...');
+            await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit', { waitUntil: 'networkidle', timeout: 15000 });
+            await page.waitForTimeout(5000);
+        }
+        
+        // Verify we're on the right page and logged in
+        try {
+            await page.waitForSelector('#zc-Reservation_Title', { timeout: 15000 });
+            console.log('  ✅ Successfully recovered to Quick Submit form');
+            return true;
+        } catch (e) {
+            console.log('  ⚠️  Form not found after refresh, may need to re-login');
+            // Try to navigate to the form again
+            try {
+                await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                await page.waitForSelector('#zc-Reservation_Title', { timeout: 15000 });
+                console.log('  ✅ Successfully navigated to Quick Submit form');
+                return true;
+            } catch (e2) {
+                console.log('  ❌ Failed to recover, form not accessible');
+                return false;
+            }
+        }
+        
+    } catch (error) {
+        console.log(`  ❌ Recovery attempt failed: ${error.message}`);
+        return false;
     }
 }
 
