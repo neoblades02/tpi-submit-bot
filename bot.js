@@ -206,52 +206,56 @@ async function loginAndProcess(data) {
                         await closeCalendarPopupIfOpen(page);
 
                         // 4. Select Tour Operator
-                        console.log(`  - Selecting tour operator: ${record['Tour Operator']}`);
+                        console.log(`  - Selecting tour operator: ${formState.tourOperator}`);
                         
                         // Use a more flexible selector that works with dynamic IDs
-                        const tourOperatorFound = await searchAndSelectTourOperator(page, record['Tour Operator']);
+                        const tourOperatorFound = await searchAndSelectTourOperator(page, formState.tourOperator);
                         
                         if (!tourOperatorFound) {
-                            console.log(`  - Tour operator not found: ${record['Tour Operator']}`);
+                            console.log(`  - Tour operator not found: ${formState.tourOperator}`);
                             record.status = 'not submitted';
                             record.Submitted = 'Not Submitted';
                             record.InvoiceNumber = 'Not Generated';
                         } else {
-                            console.log(`  - Selected tour operator: ${record['Tour Operator']}`);
+                            console.log(`  - Selected tour operator: ${formState.tourOperator}`);
 
                             // 5. Select Region (United States) with validation
-                            console.log(`  - Selecting region: United States`);
-                            await fillAndValidateRegion(page, 'United States');
+                            console.log(`  - Selecting region: ${formState.region}`);
+                            await fillAndValidateRegion(page, formState.region);
 
                             // 6. Fill Start Date with validation
-                            const startDate = formatDate(record['Booking Start Date']);
-                            console.log(`  - Setting start date: ${startDate}`);
-                            await fillAndValidateField(page, 'start_date', startDate, 'Start Date');
+                            console.log(`  - Setting start date: ${formState.startDate}`);
+                            await fillAndValidateField(page, 'start_date', formState.startDate, 'Start Date');
 
                             // 7. Fill End Date with validation
-                            const endDate = formatDate(record['Booking End Date']);
-                            console.log(`  - Setting end date: ${endDate}`);
-                            await fillAndValidateField(page, 'end_date', endDate, 'End Date');
+                            console.log(`  - Setting end date: ${formState.endDate}`);
+                            await fillAndValidateField(page, 'end_date', formState.endDate, 'End Date');
 
                             // 8. Fill Package Price with validation
                             try {
-                                const packagePrice = record['Package Price'].replace(/,/g, '');
-                                console.log(`  - Setting package price: ${packagePrice}`);
-                                await fillAndValidateField(page, 'total_price', packagePrice, 'Package Price');
+                                console.log(`  - Setting package price: ${formState.packagePrice}`);
+                                await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
                             } catch (e) {
                                 console.log(`  ⚠️  Warning: Package Price filling failed: ${e.message}`);
                             }
 
                             // 9. Fill Expected Commission with validation
                             try {
-                                const expectedCommission = record['Commission Projected'].replace(/,/g, '');
-                                console.log(`  - Setting expected commission: ${expectedCommission}`);
-                                await fillAndValidateField(page, 'expected_commission', expectedCommission, 'Expected Commission');
+                                console.log(`  - Setting expected commission: ${formState.expectedCommission}`);
+                                await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
                             } catch (e) {
                                 console.log(`  ⚠️  Warning: Expected Commission filling failed: ${e.message}`);
                             }
 
-                            // 10. Submit the form with human-like interaction
+                            // 10. Verify all form fields are populated before submission
+                            const formValid = await verifyFormState(page, formState);
+                            if (!formValid) {
+                                console.log('  ⚠️  Form validation failed, fields may be incomplete');
+                                // Don't submit if form is invalid, continue to next attempt
+                                throw new Error('Form validation failed');
+                            }
+                            
+                            // 11. Submit the form with human-like interaction
                             console.log('  - Submitting form...');
                             await submitFormHumanLike(page);
 
@@ -470,12 +474,36 @@ async function searchAndSelectTourOperator(page, tourOperator) {
             return false;
         }
         
-        // Wait for the search input field to appear
-        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        // Wait for the search input field to appear and ensure it's the correct one
+        await page.waitForTimeout(1000); // Give dropdown time to fully open
+        
+        // Find the correct search input (enabled and visible)
+        let searchInputElement = null;
+        const inputElements = await page.locator(inputSelector).all();
+        
+        for (const element of inputElements) {
+            try {
+                const isVisible = await element.isVisible();
+                const isEnabled = await element.isEnabled();
+                const classList = await element.getAttribute('class') || '';
+                
+                if (isVisible && isEnabled && (classList.includes('select2-input') || classList.includes('select2-focused'))) {
+                    searchInputElement = element;
+                    break;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+        
+        if (!searchInputElement) {
+            console.log(`    ❌ Could not find enabled search input field`);
+            return false;
+        }
         
         // Clear any existing value in the search field that might be from previous form state
         try {
-            await page.fill(inputSelector, '');
+            await searchInputElement.fill('');
             await page.waitForTimeout(500);
         } catch (e) {
             console.log(`    ⚠️  Could not clear search input: ${e.message}`);
@@ -489,11 +517,10 @@ async function searchAndSelectTourOperator(page, tourOperator) {
             const searchTerm = words.slice(0, wordCount).join(' ');
             console.log(`    📝 Trying search term: "${searchTerm}"`);
             
-            // Clear and type the search term using dynamic selector
-            const searchInput = await page.locator(inputSelector).first();
-            await searchInput.fill('');
+            // Clear and type the search term using the correct element
+            await searchInputElement.fill('');
             await page.waitForTimeout(300);
-            await searchInput.fill(searchTerm);
+            await searchInputElement.fill(searchTerm);
             await page.waitForTimeout(1500); // Wait for search results to load
             
             // Wait for results to appear - use a more flexible selector
@@ -512,9 +539,33 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 const cleanText = text.toLowerCase().trim();
                 const cleanTourOperator = tourOperator.toLowerCase().trim();
                 
-                // Check for exact match or if tour operator name is contained in the result
-                if (cleanText.includes(cleanTourOperator) || cleanTourOperator.includes(cleanText.replace(/\s*\([^)]*\)\s*/g, '').trim())) {
-                    console.log(`    ✅ Found match: "${text}" for search "${searchTerm}"`);
+                // Remove parentheses and their content for comparison
+                const cleanTextWithoutParens = cleanText.replace(/\s*\([^)]*\)\s*/g, '').trim();
+                
+                // Check for exact match first (highest priority)
+                if (cleanText === cleanTourOperator || cleanTextWithoutParens === cleanTourOperator) {
+                    console.log(`    ✅ Found exact match: "${text}" for search "${searchTerm}"`);
+                    await option.click();
+                    await page.waitForTimeout(1000);
+                    return true;
+                }
+                
+                // Check if the tour operator name starts with the search term (word boundary)
+                const searchTermLower = searchTerm.toLowerCase().trim();
+                if (cleanTextWithoutParens.startsWith(searchTermLower + ' ') || 
+                    cleanTextWithoutParens === searchTermLower ||
+                    cleanTextWithoutParens.startsWith(searchTermLower + '-') ||
+                    cleanTextWithoutParens.startsWith(searchTermLower + '.')) {
+                    console.log(`    ✅ Found word boundary match: "${text}" for search "${searchTerm}"`);
+                    await option.click();
+                    await page.waitForTimeout(1000);
+                    return true;
+                }
+                
+                // Check if the cleaned text contains the full tour operator name as a whole word
+                const wordBoundaryRegex = new RegExp(`\\b${cleanTourOperator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                if (wordBoundaryRegex.test(cleanTextWithoutParens)) {
+                    console.log(`    ✅ Found word match: "${text}" for search "${searchTerm}"`);
                     await option.click();
                     await page.waitForTimeout(1000);
                     return true;
@@ -688,9 +739,36 @@ async function fillAndValidateRegion(page, regionName, maxRetries = 3) {
                 continue;
             }
             
+            // Find the correct region input (enabled and visible)
+            let regionInputElement = null;
+            const regionInputElements = await page.locator(inputSelector).all();
+            
+            for (const element of regionInputElements) {
+                try {
+                    const isVisible = await element.isVisible();
+                    const isEnabled = await element.isEnabled();
+                    const classList = await element.getAttribute('class') || '';
+                    
+                    if (isVisible && isEnabled && (classList.includes('select2-input') || classList.includes('select2-focused'))) {
+                        regionInputElement = element;
+                        break;
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            if (!regionInputElement) {
+                console.log(`    ❌ Could not find enabled region input field`);
+                if (attempt === maxRetries) {
+                    return false;
+                }
+                await page.waitForTimeout(1000);
+                continue;
+            }
+            
             // Wait for input field and type region name
-            const regionInput = await page.waitForSelector(inputSelector, { timeout: 5000 });
-            await regionInput.fill(regionName);
+            await regionInputElement.fill(regionName);
             await page.waitForTimeout(800 + Math.random() * 400);
             
             // Click on the region option
@@ -784,9 +862,11 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
         ],
         'vendor_input': [
             'input[name="zc-sel2-inp-Vendor"]',
-            'input[name*="Vendor"]',
-            'input[placeholder*="Vendor"]',
-            'input[data-field*="Vendor"]'
+            'input[name*="zc-sel2-inp-Vendor"]',
+            'input[autocomplete*="zc-sel2-inp-Vendor"]',
+            'input.select2-input[name*="Vendor"]:not([disabled])',
+            'input[role="combobox"][name*="Vendor"]:not([disabled])',
+            'input[type="text"][name*="Vendor"]:not([disabled])'
         ],
         'destination_dropdown': [
             '.select2-container.zc-Destination .select2-choice',
@@ -797,9 +877,11 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
         ],
         'destination_input': [
             'input[name="zc-sel2-inp-Destination"]',
-            'input[name*="Destination"]',
-            'input[placeholder*="Destination"]',
-            'input[data-field*="Destination"]'
+            'input[name*="zc-sel2-inp-Destination"]',
+            'input[autocomplete*="zc-sel2-inp-Destination"]',
+            'input.select2-input[name*="Destination"]:not([disabled])',
+            'input[role="combobox"][name*="Destination"]:not([disabled])',
+            'input[type="text"][name*="Destination"]:not([disabled])'
         ]
     };
 
@@ -812,12 +894,29 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         for (const selector of selectors) {
             try {
-                const element = await page.locator(selector).first();
-                const isVisible = await element.isVisible({ timeout: 1000 });
+                const elements = await page.locator(selector).all();
                 
-                if (isVisible) {
-                    console.log(`    ✅ Found dynamic selector for ${fieldType}: ${selector}`);
-                    return selector;
+                // For input fields, find the first enabled and visible element
+                for (const element of elements) {
+                    const isVisible = await element.isVisible({ timeout: 1000 });
+                    if (!isVisible) continue;
+                    
+                    // For input fields, check if element is enabled
+                    if (fieldType.includes('input') || fieldType.includes('vendor_input') || fieldType.includes('destination_input')) {
+                        const isEnabled = await element.isEnabled({ timeout: 1000 });
+                        if (!isEnabled) continue;
+                        
+                        // Additional check for select2 input fields
+                        const classList = await element.getAttribute('class') || '';
+                        if (classList.includes('select2-input') || classList.includes('select2-focused')) {
+                            console.log(`    ✅ Found dynamic selector for ${fieldType}: ${selector}`);
+                            return selector;
+                        }
+                    } else {
+                        // For non-input fields, just check visibility
+                        console.log(`    ✅ Found dynamic selector for ${fieldType}: ${selector}`);
+                        return selector;
+                    }
                 }
             } catch (e) {
                 // Continue to next selector
@@ -931,6 +1030,58 @@ async function submitFormHumanLike(page, maxRetries = 3) {
         }
     }
     return false;
+}
+
+// Helper function to verify all form fields are populated correctly
+async function verifyFormState(page, expectedFormState) {
+    try {
+        console.log('    🔍 Verifying form state before submission...');
+        
+        // Check reservation title
+        const titleSelector = await findDynamicSelector(page, 'reservation_title');
+        if (titleSelector) {
+            const titleValue = await page.inputValue(titleSelector);
+            if (titleValue !== expectedFormState.reservationTitle) {
+                console.log(`    ⚠️  Reservation title mismatch: expected "${expectedFormState.reservationTitle}", got "${titleValue}"`);
+                return false;
+            }
+        }
+        
+        // Check booking number
+        const numberSelector = await findDynamicSelector(page, 'reservation_number');
+        if (numberSelector) {
+            const numberValue = await page.inputValue(numberSelector);
+            if (numberValue !== expectedFormState.bookingNumber) {
+                console.log(`    ⚠️  Booking number mismatch: expected "${expectedFormState.bookingNumber}", got "${numberValue}"`);
+                return false;
+            }
+        }
+        
+        // Check dates
+        const startDateSelector = await findDynamicSelector(page, 'start_date');
+        if (startDateSelector) {
+            const startDateValue = await page.inputValue(startDateSelector);
+            if (startDateValue !== expectedFormState.startDate) {
+                console.log(`    ⚠️  Start date mismatch: expected "${expectedFormState.startDate}", got "${startDateValue}"`);
+                return false;
+            }
+        }
+        
+        const endDateSelector = await findDynamicSelector(page, 'end_date');
+        if (endDateSelector) {
+            const endDateValue = await page.inputValue(endDateSelector);
+            if (endDateValue !== expectedFormState.endDate) {
+                console.log(`    ⚠️  End date mismatch: expected "${expectedFormState.endDate}", got "${endDateValue}"`);
+                return false;
+            }
+        }
+        
+        console.log('    ✅ Form state verification passed');
+        return true;
+    } catch (error) {
+        console.log(`    ❌ Form state verification failed: ${error.message}`);
+        return false;
+    }
 }
 
 // Helper function to validate critical form fields after client search (basic check only)

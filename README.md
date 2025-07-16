@@ -16,7 +16,7 @@ This project is a comprehensive Node.js bot designed to automate client booking 
   - Selects the correct client from results table or closes popup if not found.
 - **Smart Tour Operator Selection**:
   - Searches through tour operator dropdown with automatic scrolling.
-  - Uses partial matching for operator names.
+  - Uses enhanced matching logic with exact matches and word boundaries to prevent false positives.
   - Handles cases where operator is not found in the system.
 - **Regional and Date Processing**:
   - Automatically selects "United States" as destination region.
@@ -32,6 +32,11 @@ This project is a comprehensive Node.js bot designed to automate client booking 
 - **Enhanced Status Tracking**: 
   - Returns detailed JSON response with status, submission state, and invoice numbers.
   - Tracks submitted, not submitted, and error states for each record.
+- **Form Robustness & Dynamic Adaptation**:
+  - Handles form refresh scenarios where selector IDs change dynamically.
+  - Implements dynamic selector detection with multiple fallback strategies.
+  - Preserves form state across retry attempts after form refresh.
+  - Comprehensive retry logic with form state recovery.
 - **Containerized**: Includes updated `Dockerfile` for easy deployment to Google Cloud Run.
 
 ---
@@ -199,8 +204,8 @@ The API will return a JSON array with enhanced processing status for each record
 3. **Determine Reservation Type**: Auto-detect "Cruise FIT" or "Tour FIT" based on trip description
 4. **Fill Basic Info**: Reservation title and booking number
 5. **Client Search**: Search by last name, handle no results or select matching client
-6. **Tour Operator Selection**: Smart dropdown search with scrolling and partial matching
-7. **Region Selection**: Automatically set destination to "United States"
+6. **Tour Operator Selection**: Smart dropdown search with scrolling and enhanced matching logic
+7. **Region Selection**: Automatically set destination to "United States" with dynamic input detection
 8. **Date Processing**: Fill formatted start and end dates
 9. **Financial Data**: Enter package price and expected commission
 10. **Submit and Duplicate**: Click submit button and handle confirmation popup
@@ -208,6 +213,7 @@ The API will return a JSON array with enhanced processing status for each record
 12. **Status Tracking**: Record success/failure status with detailed information
 13. **Webhook Delivery**: Automatically send all processed data to n8n webhook
 14. **Form Reset**: Navigate to fresh form for next record
+15. **Robustness Features**: Dynamic selector detection, form state preservation, and retry logic handle form refresh scenarios
 
 ---
 
@@ -297,6 +303,14 @@ curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" ht
 
 - **Operator Found**: Continues with workflow
 - **Operator Not Found**: Searches with scrolling, marks as "Not Submitted" if not found after multiple attempts
+- **False Positive Prevention**: Enhanced matching prevents "Viator" from matching "Aviator Hotel" using word boundaries
+
+### Form Robustness Scenarios
+
+- **Form Refresh**: Handles dynamic selector changes with fallback strategies
+- **Field State Loss**: Preserves form data across retry attempts using form state management
+- **Selector Changes**: Uses dynamic selector detection with multiple fallback patterns
+- **Input Field Detection**: Identifies active input fields while avoiding disabled elements
 
 ### Technical Error Handling
 
@@ -304,6 +318,7 @@ curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" ht
 - **Element Not Found**: Detailed error logging with specific element information  
 - **Form Submission Errors**: Popup handling with fallback mechanisms
 - **Webhook Delivery**: Error logging with response status and data
+- **Browser Recovery**: Crash detection and recovery with form state preservation
 
 ---
 

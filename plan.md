@@ -29,9 +29,9 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 ### Tour Operator Selection (`bot.js`)
 1. **Dropdown Interaction**: Clicks tour operator dropdown (`span.select2-chosen#select2-chosen-18`)
 2. **Progressive Word Search**: Implements intelligent search strategy starting with first word, then 2 words, continuing until match found
-3. **Search Input**: Types search terms into `input[name="zc-sel2-inp-Vendor"]` field
+3. **Dynamic Search Input**: Uses `findDynamicSelector()` to locate vendor input field with multiple fallback strategies
 4. **Results Validation**: Checks dropdown results in `ul#select2-results-18` for exact or partial matches
-5. **Smart Matching**: Uses case-insensitive matching and handles operator names with parenthetical designations (e.g., "BedsOnline (NP)")
+5. **Enhanced Matching**: Prioritizes exact matches, uses word boundaries, and regex patterns to prevent false positives (e.g., "Viator" won't match "Aviator Hotel")
 6. **Fallback Handling**: Marks as "Not Submitted" if tour operator not found after trying all word combinations
 
 ### Regional Settings (`bot.js`)
@@ -40,7 +40,7 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 3. **Text Input**: Types "United States" in the destination input field
 4. **Selection Confirmation**: Clicks on the United States option from dropdown
 
-### Form Field Filling Sequence (`bot.js`)
+### Form Field Filling Sequence with Robustness (`bot.js`)
 **Sequential field filling occurs ONCE in proper order after tour operator and region selection:**
 1. **Start Date**: Fills booking start date with proper MM/DD/YYYY formatting using direct `page.fill()` method (no clicking to prevent calendar popup)
 2. **End Date**: Fills booking end date with proper MM/DD/YYYY formatting using direct `page.fill()` method (no clicking to prevent calendar popup)
@@ -50,6 +50,8 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 6. **Field Validation**: Each field is validated after filling to ensure data persists and retries up to 3 times if validation fails
 7. **Error Recovery**: Fallback error handling ensures form submission proceeds even if individual fields fail
 8. **Calendar Popup Management**: Automatically detects and closes calendar popups before each field operation
+9. **Dynamic Field Detection**: Uses `findDynamicSelector()` for all form fields to handle changing selectors after refresh
+10. **Form State Preservation**: Preserves form data across retry attempts using `formState` object
 
 ### Form Submission & Status Tracking with Enhanced Reliability
 - **Human-like Submit Process**: Uses natural delays and timing before clicking "Submit and Duplicate" button
@@ -101,13 +103,16 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 - **Browser Crash & Timeout Recovery**: Automatically detects browser crashes and timeouts, recovers by clearing blocking elements and refreshing the page, then retries the current record (up to 3 attempts per record)
 
 ### Helper Functions (`bot.js`)
-- **`searchAndSelectTourOperator()`**: Advanced tour operator search with scrolling  
+- **`searchAndSelectTourOperator()`**: Advanced tour operator search with scrolling and enhanced matching logic
 - **`formatDate()`**: Date formatting utility for MM/DD/YYYY format
 - **`sendToWebhook()`**: Automatically sends processed data to n8n webhook
 - **`validateCriticalFieldsAfterClientSearch()`**: Basic validation of critical fields (title and booking number) after client search
 - **`isBrowserCrashed()`**: Detects browser crash errors by analyzing error messages
 - **`isBrowserTimeout()`**: Detects browser timeout/unresponsive errors by analyzing error messages
 - **`recoverFromBrowserIssue()`**: Recovers from browser crashes and timeouts by clearing blocking elements, refreshing page, and verifying form accessibility
+- **`findDynamicSelector()`**: Dynamic selector detection with multiple fallback strategies for form fields
+- **`fillAndValidateRegion()`**: Enhanced region filling with dynamic input field detection
+- **`verifyFormState()`**: Validates form data integrity before submission
 - **Error Handling**: Comprehensive try-catch blocks with detailed logging and crash recovery
 
 ### API Server (`index.js`)
@@ -234,15 +239,24 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### Form Reset Strategy (Latest Update)
+### Form Robustness Enhancement (Latest Update)
+- ✅ **Dynamic Selector Detection**: Implemented `findDynamicSelector()` function with multiple fallback strategies for form fields
+- ✅ **Form State Preservation**: Added `formState` object to preserve data across retry attempts after form refresh
+- ✅ **Enhanced Tour Operator Matching**: Improved matching logic with exact matches, word boundaries, and regex patterns
+- ✅ **Retry Logic with Recovery**: Comprehensive retry system that handles form refresh and selector changes
+- ✅ **Field Validation**: Added `verifyFormState()` function to validate form data before submission
+- ✅ **Enhanced Input Detection**: Improved vendor and destination input field detection to avoid disabled elements
+
+### Form Reset Strategy (Previous Update)
 - ✅ **Eliminated Form Field Clearing Issues**: Replaced individual field clearing with full page refresh
 - ✅ **Prevented Browser Freeze**: Removed problematic selector-based clearing that caused browser unresponsiveness
 - ✅ **Consistent Fresh State**: Each record now starts with a completely clean form (same as first record)
 - ✅ **Simplified Logic**: No need to validate individual field selectors or handle dropdown resets
 - ✅ **Improved Reliability**: Form refresh ensures all elements are in their initial state
 
-**Strategy Change:**
-- **Before**: After successful submission, clear individual form fields and reset dropdowns → Risk of freezing
-- **After**: After successful submission, refresh entire form page → Guaranteed clean state
+**Robustness Strategy:**
+- **Challenge**: Form refresh changes selector IDs and clears field data
+- **Solution**: Dynamic selector detection with form state preservation across retries
+- **Benefit**: Bot can handle form refreshes seamlessly without losing data or failing on selector changes
 
 **Next Steps:** Deploy to production environment (Google Cloud Run) and monitor for optimization opportunities.
