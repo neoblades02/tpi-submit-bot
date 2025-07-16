@@ -46,6 +46,20 @@ async function loginAndProcess(data) {
         console.log('Page loaded successfully. Waiting for 10 seconds...');
         await page.waitForTimeout(10000);
 
+        // Check for "I Understand" button that sometimes appears after login
+        console.log('Checking for "I Understand" button...');
+        try {
+            const iUnderstandButton = await page.waitForSelector('#continue_button', { timeout: 5000 });
+            if (iUnderstandButton) {
+                console.log('Found "I Understand" button, clicking it...');
+                await iUnderstandButton.click();
+                await page.waitForTimeout(3000);
+                console.log('Clicked "I Understand" button successfully');
+            }
+        } catch (e) {
+            console.log('No "I Understand" button found, continuing...');
+        }
+
         console.log('Login and initial wait complete!');
 
         console.log('Navigating to the Quick Submit form...');
@@ -126,7 +140,10 @@ async function loginAndProcess(data) {
                 await page.fill(numberSelector, formState.bookingNumber);
                 console.log(`  - Set Booking Number to: ${formState.bookingNumber}`);
 
-                // 3. Search for Client Name using the search popup
+                // 3. Clear Secondary Customers field to prevent confusion
+                await clearSecondaryCustomersField(page);
+
+                // 4. Search for Client Name using the search popup
                 const clientName = record['Client Name'];
                 const [firstName, ...lastNameParts] = clientName.split(' ');
                 const lastName = lastNameParts.join(' ');
@@ -165,9 +182,39 @@ async function loginAndProcess(data) {
                             await page.keyboard.press('Escape');
                         }
                     }
-                    record.status = 'not submitted';
-                    record.Submitted = 'Not Submitted';
-                    record.InvoiceNumber = 'Not Generated';
+                    
+                    // Wait for popup to close
+                    await page.waitForTimeout(2000);
+                    
+                    // Try to create new client
+                    console.log(`  - Attempting to create new client: ${firstName} ${lastName}`);
+                    const clientCreated = await createNewClient(page, firstName, lastName);
+                    
+                    if (clientCreated) {
+                        console.log(`  - New client created successfully, restarting form processing...`);
+                        
+                        // Refresh the form to start fresh
+                        console.log(`  - Refreshing form to restart processing with new client...`);
+                        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                        
+                        // Wait for the form to load
+                        const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                        if (titleSelector) {
+                            await page.waitForSelector(titleSelector, { timeout: 60000 });
+                        } else {
+                            await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                        }
+                        
+                        console.log(`  - Form refreshed, restarting entire record processing from beginning...`);
+                        // Reset processingAttempt to restart from the beginning
+                        processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                        continue;
+                    } else {
+                        console.log(`  - Failed to create new client: ${clientName}`);
+                        record.status = 'not submitted';
+                        record.Submitted = 'Not Submitted - Client Creation Failed';
+                        record.InvoiceNumber = 'Not Generated';
+                    }
                 } else {
                     // Check if results were returned
                     const rows = await page.locator('.ht_master .htCore tbody tr').all();
@@ -305,9 +352,39 @@ async function loginAndProcess(data) {
                                 await page.keyboard.press('Escape');
                             }
                         }
-                        record.status = 'not submitted';
-                        record.Submitted = 'Not Submitted';
-                        record.InvoiceNumber = 'Not Generated';
+                        
+                        // Wait for popup to close
+                        await page.waitForTimeout(2000);
+                        
+                        // Try to create new client
+                        console.log(`  - Attempting to create new client: ${firstName} ${lastName}`);
+                        const clientCreated = await createNewClient(page, firstName, lastName);
+                        
+                        if (clientCreated) {
+                            console.log(`  - New client created successfully, restarting form processing...`);
+                            
+                            // Refresh the form to start fresh
+                            console.log(`  - Refreshing form to restart processing with new client...`);
+                            await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                            
+                            // Wait for the form to load
+                            const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                            if (titleSelector) {
+                                await page.waitForSelector(titleSelector, { timeout: 60000 });
+                            } else {
+                                await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                            }
+                            
+                            console.log(`  - Form refreshed, continuing to next attempt of record processing...`);
+                            // Continue to next processing attempt - this will restart the entire form flow
+                            processingAttempt = 0; // Reset to restart from beginning
+                            continue;
+                        } else {
+                            console.log(`  - Failed to create new client: ${clientName}`);
+                            record.status = 'not submitted';
+                            record.Submitted = 'Not Submitted - Client Creation Failed';
+                            record.InvoiceNumber = 'Not Generated';
+                        }
                     }
                 }
 
@@ -407,6 +484,400 @@ async function loginAndProcess(data) {
             console.log('Browser closed.');
         }
     }
+}
+
+// Helper function to clear Secondary Customers field to prevent confusion
+async function clearSecondaryCustomersField(page) {
+    try {
+        console.log('  🧹 Clearing Secondary Customers field...');
+        
+        // Find the secondary customers multi-select container
+        const secondaryCustomersContainer = await page.locator('.select2-container.zc-Secondary_Customers').first();
+        const isVisible = await secondaryCustomersContainer.isVisible().catch(() => false);
+        
+        if (isVisible) {
+            // Check if there are any selected items to clear
+            const selectedItems = await page.locator('.select2-container.zc-Secondary_Customers .select2-search-choice').all();
+            
+            if (selectedItems.length > 0) {
+                console.log(`  🧹 Found ${selectedItems.length} secondary customers to clear`);
+                
+                // Click each close button to remove selected items
+                for (const item of selectedItems) {
+                    try {
+                        const closeButton = item.locator('.select2-search-choice-close');
+                        await closeButton.click();
+                        await page.waitForTimeout(300);
+                    } catch (e) {
+                        console.log(`  ⚠️ Could not remove secondary customer item: ${e.message}`);
+                    }
+                }
+                
+                console.log('  ✅ Secondary customers cleared');
+            } else {
+                console.log('  ✅ Secondary customers field is already empty');
+            }
+            
+            // Also clear the input field if it has any text
+            const secondaryInput = await page.locator('input[name="zc-sel2-inp-Secondary_Customers"]').first();
+            const inputExists = await secondaryInput.isVisible().catch(() => false);
+            
+            if (inputExists) {
+                await secondaryInput.fill('');
+                console.log('  ✅ Secondary customers input field cleared');
+            }
+        } else {
+            console.log('  ✅ Secondary customers field not found or not visible');
+        }
+        
+    } catch (error) {
+        console.log(`  ⚠️ Error clearing secondary customers field: ${error.message}`);
+    }
+}
+
+// Helper function to create a new client when not found in search
+async function createNewClient(page, firstName, lastName, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`    👤 Creating new client: ${firstName} ${lastName} (attempt ${attempt}/${maxRetries})`);
+            
+            // First, try to click the client dropdown to open it
+            console.log(`    📋 Opening client dropdown...`);
+            const clientDropdownSelector = '.select2-container.zc-Customer .select2-choice';
+            await page.waitForSelector(clientDropdownSelector, { timeout: 5000 });
+            
+            // Try multiple approaches to click the dropdown
+            let dropdownOpened = false;
+            
+            // Method 1: Direct click
+            try {
+                await page.click(clientDropdownSelector);
+                await page.waitForTimeout(1000);
+                dropdownOpened = true;
+                console.log(`    ✅ Dropdown opened with direct click`);
+            } catch (e) {
+                console.log(`    ⚠️ Direct click failed: ${e.message}`);
+            }
+            
+            // Method 2: Force click if direct click failed
+            if (!dropdownOpened) {
+                try {
+                    await page.click(clientDropdownSelector, { force: true });
+                    await page.waitForTimeout(1000);
+                    dropdownOpened = true;
+                    console.log(`    ✅ Dropdown opened with force click`);
+                } catch (e) {
+                    console.log(`    ⚠️ Force click failed: ${e.message}`);
+                }
+            }
+            
+            // Method 3: JavaScript click if force click failed
+            if (!dropdownOpened) {
+                try {
+                    await page.evaluate((selector) => {
+                        const dropdown = document.querySelector(selector);
+                        if (dropdown) dropdown.click();
+                    }, clientDropdownSelector);
+                    await page.waitForTimeout(1000);
+                    dropdownOpened = true;
+                    console.log(`    ✅ Dropdown opened with JavaScript click`);
+                } catch (e) {
+                    console.log(`    ⚠️ JavaScript click failed: ${e.message}`);
+                }
+            }
+            
+            if (!dropdownOpened) {
+                throw new Error('Could not open client dropdown');
+            }
+            
+            // Wait for the dropdown to be fully open and search for the Add New Customer button
+            console.log(`    🔍 Waiting for dropdown to open and looking for Add New Customer button...`);
+            
+            // Wait for the select2-drop to be visible with the client list
+            await page.waitForSelector('.select2-drop.Customer-switch-search.select2-drop-active', { timeout: 10000 });
+            
+            // Wait a bit more for the dropdown content to fully load
+            await page.waitForTimeout(2000);
+            
+            // Debug: Check if the addNew element exists and is visible
+            const addNewExists = await page.evaluate(() => {
+                const addNew = document.querySelector('#addNew');
+                if (addNew) {
+                    const rect = addNew.getBoundingClientRect();
+                    return {
+                        exists: true,
+                        visible: rect.width > 0 && rect.height > 0,
+                        rect: rect,
+                        innerHTML: addNew.innerHTML
+                    };
+                }
+                return { exists: false };
+            });
+            
+            console.log(`    🔍 Add New Customer element status:`, addNewExists);
+            
+            // Try multiple selectors for the Add New Customer button
+            let addNewButton = null;
+            const addNewSelectors = [
+                '#addNew',
+                '.addnewparent',
+                '[id="addNew"]',
+                'div[id="addNew"]',
+                'div.addnewparent',
+                'div:has-text("Add New Customer")'
+            ];
+            
+            for (const selector of addNewSelectors) {
+                try {
+                    console.log(`    🔍 Trying selector: ${selector}`);
+                    await page.waitForSelector(selector, { timeout: 3000 });
+                    addNewButton = selector;
+                    console.log(`    ✅ Found Add New Customer button with selector: ${selector}`);
+                    break;
+                } catch (e) {
+                    console.log(`    ⚠️ Selector ${selector} failed: ${e.message}`);
+                }
+            }
+            
+            if (!addNewButton) {
+                throw new Error('Could not find Add New Customer button with any selector');
+            }
+            
+            // Click the "Add New Customer" button
+            console.log(`    ➕ Clicking Add New Customer with selector: ${addNewButton}`);
+            
+            // First try to remove or hide the select2-drop-mask that might be blocking clicks
+            try {
+                await page.evaluate(() => {
+                    const mask = document.getElementById('select2-drop-mask');
+                    if (mask) {
+                        mask.style.display = 'none';
+                        mask.style.visibility = 'hidden';
+                    }
+                });
+                console.log(`    🎭 Removed select2-drop-mask overlay`);
+            } catch (e) {
+                console.log(`    ⚠️ Could not remove mask: ${e.message}`);
+            }
+            
+            // Try multiple approaches to click the Add New Customer button
+            let clickSuccessful = false;
+            
+            // Method 1: Use the specific #addNew selector with JavaScript click
+            try {
+                await page.evaluate(() => {
+                    const addNewBtn = document.querySelector('#addNew');
+                    if (addNewBtn) {
+                        addNewBtn.click();
+                    }
+                });
+                await page.waitForTimeout(1000);
+                clickSuccessful = true;
+                console.log(`    ✅ Successfully clicked Add New Customer with JavaScript`);
+            } catch (e) {
+                console.log(`    ⚠️ JavaScript click failed: ${e.message}`);
+            }
+            
+            // Method 2: Try force click if JavaScript failed
+            if (!clickSuccessful) {
+                try {
+                    await page.click('#addNew', { force: true });
+                    await page.waitForTimeout(1000);
+                    clickSuccessful = true;
+                    console.log(`    ✅ Successfully clicked Add New Customer with force click`);
+                } catch (e) {
+                    console.log(`    ⚠️ Force click failed: ${e.message}`);
+                }
+            }
+            
+            // Method 3: Try clicking at the element's position
+            if (!clickSuccessful) {
+                try {
+                    const addNewElement = await page.locator('#addNew').first();
+                    const box = await addNewElement.boundingBox();
+                    if (box) {
+                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                        await page.waitForTimeout(1000);
+                        clickSuccessful = true;
+                        console.log(`    ✅ Successfully clicked Add New Customer with mouse click`);
+                    }
+                } catch (e) {
+                    console.log(`    ⚠️ Mouse click failed: ${e.message}`);
+                }
+            }
+            
+            if (!clickSuccessful) {
+                throw new Error('All click methods failed for Add New Customer button');
+            }
+            
+            // Wait for the popup to load and ensure dropdown is closed
+            console.log(`    ⏳ Waiting for new client popup to load...`);
+            await page.waitForTimeout(2000);
+            
+            // Close the dropdown if it's still open (this might help with the freezing issue)
+            try {
+                await page.evaluate(() => {
+                    // Hide the dropdown
+                    const dropdown = document.querySelector('.select2-drop.Customer-switch-search.select2-drop-active');
+                    if (dropdown) {
+                        dropdown.style.display = 'none';
+                    }
+                    
+                    // Also ensure the mask is hidden
+                    const mask = document.getElementById('select2-drop-mask');
+                    if (mask) {
+                        mask.style.display = 'none';
+                    }
+                });
+                console.log(`    🚪 Closed dropdown to prevent conflicts with popup`);
+            } catch (e) {
+                console.log(`    ⚠️ Could not close dropdown: ${e.message}`);
+            }
+            
+            // Wait a bit more for the popup to fully load
+            await page.waitForTimeout(1000);
+            
+            // Fill in the first name
+            console.log(`    📝 Filling first name: ${firstName}`);
+            await page.waitForSelector('#zc-First_Name', { timeout: 10000 });
+            await page.fill('#zc-First_Name', firstName);
+            
+            // Fill in the last name
+            console.log(`    📝 Filling last name: ${lastName}`);
+            await page.waitForSelector('#zc-Last_Name', { timeout: 10000 });
+            await page.fill('#zc-Last_Name', lastName);
+            
+            // Check the "No Middle Name" checkbox
+            console.log(`    ☑️ Checking No Middle Name checkbox...`);
+            
+            // Try multiple selectors for the No Middle Name checkbox
+            let checkboxClicked = false;
+            const checkboxSelectors = [
+                'label[for="ZC_LNSVJ5_No_Middle_Name_5"]',
+                'label[for*="No_Middle_Name"]',
+                'input[name*="No_Middle_Name"]',
+                'label:has-text("No Middle Name")',
+                'input[type="checkbox"][name*="Middle"]'
+            ];
+            
+            for (const selector of checkboxSelectors) {
+                try {
+                    console.log(`    🔍 Trying checkbox selector: ${selector}`);
+                    await page.waitForSelector(selector, { timeout: 5000 });
+                    await page.click(selector);
+                    checkboxClicked = true;
+                    console.log(`    ✅ Successfully clicked No Middle Name checkbox with: ${selector}`);
+                    break;
+                } catch (e) {
+                    console.log(`    ⚠️ Checkbox selector ${selector} failed: ${e.message}`);
+                }
+            }
+            
+            if (!checkboxClicked) {
+                console.log(`    ⚠️ Could not find No Middle Name checkbox, continuing without it`);
+            }
+            
+            // Wait for the form to process the checkbox
+            await page.waitForTimeout(2000);
+            
+            // Click the Add button
+            console.log(`    ✅ Clicking Add button...`);
+            await page.waitForSelector('input[type="submit"][value="Add"]', { timeout: 10000 });
+            await page.click('input[type="submit"][value="Add"]');
+            
+            // Wait for the client to be created
+            console.log(`    ⏳ Waiting for client creation to complete...`);
+            await page.waitForTimeout(5000);
+            
+            // Close any remaining popups or overlays
+            console.log(`    🚪 Closing all popups and overlays...`);
+            try {
+                // Try to close popup using common close methods
+                await page.keyboard.press('Escape');
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(1000);
+                
+                // Try to click any close buttons
+                const closeSelectors = [
+                    '.close',
+                    '.popup-close',
+                    '.modal-close',
+                    '[aria-label="Close"]',
+                    'button:has-text("Close")',
+                    'button:has-text("Cancel")'
+                ];
+                
+                for (const selector of closeSelectors) {
+                    try {
+                        const closeButton = await page.locator(selector).first();
+                        if (await closeButton.isVisible()) {
+                            await closeButton.click();
+                            await page.waitForTimeout(500);
+                        }
+                    } catch (e) {
+                        // Continue to next selector
+                    }
+                }
+                
+                // Remove any overlays manually
+                await page.evaluate(() => {
+                    // Remove any modal overlays
+                    const overlays = document.querySelectorAll('.modal-overlay, .popup-overlay, .select2-drop-mask');
+                    overlays.forEach(overlay => overlay.remove());
+                    
+                    // Hide any popups
+                    const popups = document.querySelectorAll('.popup, .modal, .select2-drop');
+                    popups.forEach(popup => popup.style.display = 'none');
+                });
+                
+                console.log(`    ✅ Closed all popups and overlays`);
+            } catch (e) {
+                console.log(`    ⚠️ Error closing popups: ${e.message}`);
+            }
+            
+            // Refresh the form to start fresh
+            console.log(`    🔄 Refreshing form after client creation...`);
+            await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+            
+            // Wait for the form to load
+            const titleSelector = await findDynamicSelector(page, 'reservation_title');
+            if (titleSelector) {
+                await page.waitForSelector(titleSelector, { timeout: 60000 });
+            } else {
+                await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+            }
+            
+            console.log(`    ✅ New client created successfully: ${firstName} ${lastName}`);
+            return true;
+            
+        } catch (error) {
+            console.log(`    ❌ Error creating new client (attempt ${attempt}): ${error.message}`);
+            if (attempt === maxRetries) {
+                console.log(`    💥 Failed to create new client after ${maxRetries} attempts`);
+                return false;
+            }
+            
+            // Wait before retrying
+            await page.waitForTimeout(2000);
+            
+            // Try to refresh the form if we're not on the last attempt
+            if (attempt < maxRetries) {
+                try {
+                    console.log(`    🔄 Refreshing form before retry...`);
+                    await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                    const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                    if (titleSelector) {
+                        await page.waitForSelector(titleSelector, { timeout: 60000 });
+                    } else {
+                        await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                    }
+                } catch (refreshError) {
+                    console.log(`    ⚠️ Form refresh failed: ${refreshError.message}`);
+                }
+            }
+        }
+    }
+    return false;
 }
 
 // Helper function to search and select tour operator with progressive word search
