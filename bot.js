@@ -206,6 +206,10 @@ async function loginAndProcess(data) {
                         }
                         
                         console.log(`  - Form refreshed, restarting entire record processing from beginning...`);
+                        
+                        // Clear secondary customers field again after client creation
+                        await clearSecondaryCustomersField(page);
+                        
                         // Reset processingAttempt to restart from the beginning
                         processingAttempt = 0; // Will be incremented to 1 at the end of the loop
                         continue;
@@ -376,6 +380,10 @@ async function loginAndProcess(data) {
                             }
                             
                             console.log(`  - Form refreshed, continuing to next attempt of record processing...`);
+                            
+                            // Clear secondary customers field again after client creation
+                            await clearSecondaryCustomersField(page);
+                            
                             // Continue to next processing attempt - this will restart the entire form flow
                             processingAttempt = 0; // Reset to restart from beginning
                             continue;

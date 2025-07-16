@@ -11,7 +11,10 @@ This project is a comprehensive Node.js bot designed to automate client booking 
   - Determines "Reservation Title" (`Cruise FIT` or `Tour FIT`) based on booking details.
   - Fills reservation title, booking number, dates, pricing, and commission fields.
 - **Advanced Client Search**: 
+  - Clears secondary customers field to prevent form confusion.
   - Uses the portal's search popup to find clients by last name.
+  - Creates new clients when not found in search results.
+  - Restarts form processing after successful client creation.
   - Handles "no results found" scenarios with proper error messaging.
   - Selects the correct client from results table or closes popup if not found.
 - **Smart Tour Operator Selection**:
@@ -203,17 +206,20 @@ The API will return a JSON array with enhanced processing status for each record
 2. **Navigate** to Quick Submit form
 3. **Determine Reservation Type**: Auto-detect "Cruise FIT" or "Tour FIT" based on trip description
 4. **Fill Basic Info**: Reservation title and booking number
-5. **Client Search**: Search by last name, handle no results or select matching client
-6. **Tour Operator Selection**: Smart dropdown search with scrolling and enhanced matching logic
-7. **Region Selection**: Automatically set destination to "United States" with dynamic input detection
-8. **Date Processing**: Fill formatted start and end dates
-9. **Financial Data**: Enter package price and expected commission
-10. **Submit and Duplicate**: Click submit button and handle confirmation popup
-11. **Invoice Extraction**: Extract generated invoice number from updated form
-12. **Status Tracking**: Record success/failure status with detailed information
-13. **Webhook Delivery**: Automatically send all processed data to n8n webhook
-14. **Form Reset**: Navigate to fresh form for next record
-15. **Robustness Features**: Dynamic selector detection, form state preservation, and retry logic handle form refresh scenarios
+5. **Clear Secondary Customers**: Remove any previously selected secondary customers to prevent confusion
+6. **Client Search**: Search by last name, create new client if not found, or select matching client
+7. **Client Creation**: When client not found, create new client with first name, last name, and "No Middle Name" checkbox
+8. **Form Restart**: After client creation, refresh form and restart processing for the same record
+9. **Tour Operator Selection**: Smart dropdown search with scrolling and enhanced matching logic
+10. **Region Selection**: Automatically set destination to "United States" with dynamic input detection
+11. **Date Processing**: Fill formatted start and end dates
+12. **Financial Data**: Enter package price and expected commission
+13. **Submit and Duplicate**: Click submit button and handle confirmation popup
+14. **Invoice Extraction**: Extract generated invoice number from updated form
+15. **Status Tracking**: Record success/failure status with detailed information
+16. **Webhook Delivery**: Automatically send all processed data to n8n webhook
+17. **Form Reset**: Navigate to fresh form for next record
+18. **Robustness Features**: Dynamic selector detection, form state preservation, and retry logic handle form refresh scenarios
 
 ---
 

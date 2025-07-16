@@ -19,12 +19,14 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 - **Advanced Form Processing**: For each record received, the bot performs comprehensive form automation:
 
 ### Client Search & Handling (`bot.js`)
-1. **Smart Client Search**: Searches by last name using the search popup
-2. **No Results Handling**: Detects "Sorry, we did not find any results for your keywords" message and marks as "Not Submitted"
-3. **Client Matching**: Matches clients by first name and last name from search results
-4. **Close Button**: Uses close icon (`span.popupClose`) when no results found
-5. **Done Button**: Clicks "Done" button (`#zc-adv-btn-finish`) after successful client selection
-6. **Critical Field Check**: After successful client selection, performs basic validation of reservation title and booking number to ensure they weren't cleared
+1. **Secondary Customers Field Clearing**: Automatically clears any previously selected secondary customers to prevent confusion between main and secondary customer fields
+2. **Smart Client Search**: Searches by last name using the search popup
+3. **New Client Creation**: When client not found, creates new client with first name, last name, and "No Middle Name" checkbox, then restarts form processing
+4. **Client Search Restart**: After creating a new client, refreshes form and restarts entire processing sequence for the same record
+5. **Client Matching**: Matches clients by first name and last name from search results
+6. **Close Button**: Uses close icon (`span.popupClose`) when no results found
+7. **Done Button**: Clicks "Done" button (`#zc-adv-btn-finish`) after successful client selection
+8. **Critical Field Check**: After successful client selection, performs basic validation of reservation title and booking number to ensure they weren't cleared
 
 ### Tour Operator Selection (`bot.js`)
 1. **Dropdown Interaction**: Clicks tour operator dropdown (`span.select2-chosen#select2-chosen-18`)
@@ -103,6 +105,8 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 - **Browser Crash & Timeout Recovery**: Automatically detects browser crashes and timeouts, recovers by clearing blocking elements and refreshing the page, then retries the current record (up to 3 attempts per record)
 
 ### Helper Functions (`bot.js`)
+- **`clearSecondaryCustomersField()`**: Clears any previously selected secondary customers to prevent form confusion
+- **`createNewClient()`**: Creates new client when not found in search results, handles dropdown interaction, form filling, and popup management
 - **`searchAndSelectTourOperator()`**: Advanced tour operator search with scrolling and enhanced matching logic
 - **`formatDate()`**: Date formatting utility for MM/DD/YYYY format
 - **`sendToWebhook()`**: Automatically sends processed data to n8n webhook
@@ -239,7 +243,19 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### Form Robustness Enhancement (Latest Update)
+### Secondary Customers Field Management (Latest Update)
+- ✅ **Secondary Customers Field Clearing**: Added `clearSecondaryCustomersField()` function to prevent bot confusion between main and secondary customer fields
+- ✅ **Multi-Select Dropdown Handling**: Properly handles Select2 multi-select containers with selected item removal
+- ✅ **Form Field Isolation**: Ensures main customer field is used for client search instead of secondary customers field
+- ✅ **Clean Form State**: Clears both selected items and input text from secondary customers field before processing each record
+
+### New Client Creation Enhancement (Previous Update)
+- ✅ **Automatic Client Creation**: When client not found in search, creates new client with first name, last name, and "No Middle Name" checkbox
+- ✅ **Form Processing Restart**: After creating new client, refreshes form and restarts entire processing sequence for the same record
+- ✅ **Loop Structure Fix**: Properly resets processing attempt counter to restart from beginning after client creation
+- ✅ **Popup Management**: Comprehensive popup and overlay handling during client creation process
+
+### Form Robustness Enhancement (Earlier Update)
 - ✅ **Dynamic Selector Detection**: Implemented `findDynamicSelector()` function with multiple fallback strategies for form fields
 - ✅ **Form State Preservation**: Added `formState` object to preserve data across retry attempts after form refresh
 - ✅ **Enhanced Tour Operator Matching**: Improved matching logic with exact matches, word boundaries, and regex patterns
