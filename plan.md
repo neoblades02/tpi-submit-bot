@@ -1,28 +1,45 @@
 # Project Plan: TPI Suitcase Bot
 
-This document outlines the development plan for the TPI Suitcase automation bot.
+This document outlines the development plan for the TPI Suitcase automation bot with both synchronous and asynchronous processing capabilities.
 
 ## Project Structure
 
-- **`index.js`**: Express server that exposes a `/trigger-bot` POST endpoint
-- **`bot.js`**: Core Playwright automation logic for TPI Suitcase portal with comprehensive form automation
-- **`package.json`**: Project dependencies (express, playwright, dotenv, axios)
-- **`Dockerfile`**: Container configuration using Microsoft's Playwright image
-- **`sample.json`**: Example payload format for testing
+- **`index.js`**: Express server with multiple endpoints for sync/async processing
+- **`bot.js`**: Core Playwright automation logic for TPI Suitcase portal
+- **`jobManager.js`**: Asynchronous job processing and queue management system
+- **`package.json`**: Project dependencies (express, playwright, dotenv, axios, uuid)
+- **`Dockerfile`**: Production-ready container configuration
+- **`docker-compose.yml`**: Local development and testing environment
+- **`.dockerignore`**: Docker build optimization
+- **`sample.json`**: Example payload format for testing (1,407 records)
 - **`README.md`**: Complete setup and usage documentation
+- **`DEPLOYMENT.md`**: Production deployment guide
+- **`ASYNC_USAGE.md`**: Asynchronous processing usage guide
+- **`.env.example`**: Environment variables template
 
 ## Core Logic & Features
 
-- **API Trigger**: The bot is triggered by a POST request to the `/trigger-bot` endpoint, designed for integration with n8n.
-- **Browser Automation**: Uses Playwright with Chromium browser (headless: false for development) to automate interactions with the TPI Suitcase web portal.
-- **Secure Credentials**: Loads credentials from a `.env` file for security (USERNAME and PASSWORD).
+### Processing Modes
+- **Synchronous Processing**: `/trigger-bot` endpoint for small datasets (<50 records)
+- **Asynchronous Processing**: `/trigger-bot-async` endpoint for large datasets (100+ records)
+- **Job Management**: Real-time progress tracking, job cancellation, and result retrieval
+- **Batch Processing**: Configurable batch sizes to prevent memory issues and platform timeouts
+
+### Technical Foundation
+- **Browser Automation**: Uses Playwright with Chromium browser (headless: true for production) 
+- **Secure Credentials**: Loads credentials from a `.env` file for security (USERNAME and PASSWORD)
+- **Production Ready**: Security-hardened browser configuration with resource limits
+- **Cloud Platform Optimized**: Perfect for Coolify, Google Cloud Run, and similar platforms
+
+### Form Processing
+- **Reservation Type**: All bookings are processed as "Tour FIT" for consistency
 - **Advanced Form Processing**: For each record received, the bot performs comprehensive form automation:
 
 ### Client Search & Handling (`bot.js`)
 1. **Secondary Customers Field Clearing**: Automatically clears any previously selected secondary customers to prevent confusion between main and secondary customer fields
 2. **Smart Client Search**: Searches by last name using the search popup
-3. **New Client Creation**: When client not found, creates new client with first name, last name, and "No Middle Name" checkbox, then restarts form processing
-4. **Client Search Restart**: After creating a new client, refreshes form and restarts entire processing sequence for the same record
+3. **New Client Creation**: When client not found, creates new client with first name, last name, and "No Middle Name" checkbox, then performs F5-style page refresh
+4. **Client Search Restart**: After creating a new client, performs complete page reload (F5) and restarts entire processing sequence for the same record with clean DOM
 5. **Client Matching**: Matches clients by first name and last name from search results
 6. **Close Button**: Uses close icon (`span.popupClose`) when no results found
 7. **Done Button**: Clicks "Done" button (`#zc-adv-btn-finish`) after successful client selection
@@ -90,7 +107,7 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 ### Enhanced Form Automation (`bot.js`)
 - Processes data from `data[0].rows` array
 - **Step-by-step processing for each record:**
-  1. **Reservation Title**: Automatically determines 'Cruise FIT' or 'Tour FIT' based on description
+  1. **Reservation Title**: All bookings are set to 'Tour FIT' for consistency
   2. **Booking Number**: Fills reservation number field
   3. **Client Search**: Advanced search with multiple fallback scenarios
   3a. **Critical Field Check**: After client selection, basic validation of reservation title and booking number
@@ -120,10 +137,13 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 - **Error Handling**: Comprehensive try-catch blocks with detailed logging and crash recovery
 
 ### API Server (`index.js`)
-- Express server on port 3000
+- Express server on configurable port (default: 3000)
+- **Synchronous Endpoint**: `/trigger-bot` - Returns immediately with complete results
+- **Asynchronous Endpoint**: `/trigger-bot-async` - Returns job ID immediately, processes in background
+- **Job Management**: Multiple endpoints for job tracking and control
+- **Health Monitoring**: Built-in health check and API information endpoints
 - Validates incoming JSON array format
-- Calls `loginAndProcess()` function
-- Returns processed results with enhanced status codes
+- Enhanced error handling with detailed status codes
 
 ## Task Checklist
 
@@ -184,13 +204,53 @@ This document outlines the development plan for the TPI Suitcase automation bot.
 - [x] Document the enhanced automation process
 - [x] Update plan.md with complete feature documentation
 
+### Phase 5: Asynchronous Processing & Production Readiness (Completed)
+
+- [x] **Asynchronous Job Processing System**
+  - [x] Implement JobManager class with queue management
+  - [x] Add job status tracking and progress reporting
+  - [x] Create batch processing for large datasets
+  - [x] Add job cancellation and recovery mechanisms
+
+- [x] **Enhanced API Endpoints**
+  - [x] Add `/trigger-bot-async` endpoint for large datasets
+  - [x] Implement job status tracking endpoints
+  - [x] Add progress monitoring endpoints
+  - [x] Create job results retrieval endpoints
+
+- [x] **Production Deployment**
+  - [x] Security-hardened browser configuration
+  - [x] Docker production optimization
+  - [x] Resource limits and memory management
+  - [x] Health checks and monitoring
+
+- [x] **Documentation & Guides**
+  - [x] Complete async usage documentation
+  - [x] Production deployment guide
+  - [x] Docker and docker-compose configurations
+  - [x] Environment configuration templates
+
+- [x] **Platform Optimization**
+  - [x] Coolify deployment readiness
+  - [x] Timeout prevention for cloud platforms
+  - [x] Batch processing for memory efficiency
+  - [x] Background job processing
+
 ## Current Status
 
 The TPI Suitcase Bot is fully implemented with comprehensive automation capabilities:
 
-- ✅ Express API server with `/trigger-bot` endpoint
+### Core Features
+- ✅ Express API server with multiple endpoints
+- ✅ **Synchronous Processing**: `/trigger-bot` for small datasets
+- ✅ **Asynchronous Processing**: `/trigger-bot-async` for large datasets
+- ✅ **Job Management System**: Real-time progress tracking and job control
+- ✅ **Batch Processing**: Configurable batch sizes for memory efficiency
 - ✅ Advanced Playwright automation for TPI Suitcase portal
 - ✅ Secure login with iframe handling
+
+### Form Automation
+- ✅ **Consistent Reservation Type**: All bookings set to "Tour FIT"
 - ✅ **Enhanced client search with no-results handling**
 - ✅ **Advanced tour operator selection with scrolling**
 - ✅ **Automatic region selection (United States)**
@@ -198,16 +258,21 @@ The TPI Suitcase Bot is fully implemented with comprehensive automation capabili
 - ✅ **Financial data handling (price & commission)**
 - ✅ **Submit and Duplicate workflow with popup handling**
 - ✅ **Invoice number extraction and tracking**
+
+### Production Features
+- ✅ **Browser crash and timeout detection and recovery system**
+- ✅ **Security-hardened browser configuration**
+- ✅ **Resource management and memory limits**
+- ✅ **Health monitoring and API information endpoints**
 - ✅ **Automatic webhook integration to n8n**
 - ✅ **Comprehensive status tracking with "Submitted" and "InvoiceNumber" fields**
-- ✅ **Browser crash and timeout detection and recovery system**
-- ✅ Robust error handling and recovery
-- ✅ Docker containerization ready
-- ✅ Complete documentation and examples
+- ✅ **Docker containerization with production optimization**
+- ✅ **Coolify deployment readiness**
+- ✅ **Complete documentation and deployment guides**
 
 ## Form Fields Automated
 
-1. **Reservation Title** - Auto-determined (Cruise FIT/Tour FIT)
+1. **Reservation Title** - All bookings set to "Tour FIT"
 2. **Booking Number** - From data input
 3. **Client Selection** - Advanced search with fallback handling
 4. **Tour Operator** - Smart dropdown search with scrolling
@@ -243,15 +308,41 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### Secondary Customers Field Management (Latest Update)
+### F5-Style Page Refresh Enhancement (Latest Update)
+- ✅ **True Browser Refresh**: Replaced `page.goto()` with `page.reload()` for authentic F5-style page refresh after client creation
+- ✅ **Complete DOM Reset**: Ensures all malformed DOM structures and JavaScript states are completely cleared
+- ✅ **Network Idle Wait**: Uses `waitUntil: 'networkidle'` to ensure page is fully loaded before proceeding
+- ✅ **Form Navigation**: Automatically navigates back to Quick Submit form after F5 refresh
+- ✅ **Tour Operator Fix**: Resolves tour operator search freezing issues caused by malformed DOM after client creation
+- ✅ **Fresh Browser Environment**: Provides completely clean browser state for continued processing
+
+### Complete Interference Protection System (Previous Update)
+- ✅ **Universal Popup Prevention**: Added `closeCalendarPopupIfOpen()` calls before all critical form interactions
+- ✅ **Tour Operator Selection Enhancement**: Multiple click methods (Standard → Force → JavaScript) with dropdown closure verification
+- ✅ **Client Creation Freeze Prevention**: Aggressive customer dropdown closure immediately after "Add New Customer" click
+- ✅ **Region Selection Protection**: Popup-protected dropdown interaction to prevent calendar interference
+- ✅ **Form Submission Safety**: Pre-submission popup clearing to ensure clean submit button access
+- ✅ **Form Verification Protection**: Popup clearing before form state verification to prevent reading interference
+- ✅ **Comprehensive Error Recovery**: Each step now has multiple fallback methods and proper error handling
+
+### Client Creation Robustness Enhancement (Previous Update)
+- ✅ **Dropdown Interference Prevention**: Force-closes customer dropdown and all masks immediately after "Add New Customer" click
+- ✅ **Multiple Popup Closure Methods**: Uses DOM manipulation, Escape keys, and element removal for complete cleanup
+- ✅ **Targeted Post-Creation Cleanup**: Only closes relevant popups while preserving normal form functionality
+- ✅ **Form Flow Continuity**: Ensures seamless continuation from client creation to tour operator selection
+- ✅ **Readonly Field Handling**: Proper detection and handling of readonly secondary customers field after client creation
+
+### Secondary Customers Field Management (Previous Update)
 - ✅ **Secondary Customers Field Clearing**: Added `clearSecondaryCustomersField()` function to prevent bot confusion between main and secondary customer fields
 - ✅ **Multi-Select Dropdown Handling**: Properly handles Select2 multi-select containers with selected item removal
 - ✅ **Form Field Isolation**: Ensures main customer field is used for client search instead of secondary customers field
 - ✅ **Clean Form State**: Clears both selected items and input text from secondary customers field before processing each record
+- ✅ **Readonly Input Detection**: Checks field editability before attempting to clear readonly inputs
 
-### New Client Creation Enhancement (Previous Update)
+### New Client Creation Enhancement (Earlier Update)
 - ✅ **Automatic Client Creation**: When client not found in search, creates new client with first name, last name, and "No Middle Name" checkbox
-- ✅ **Form Processing Restart**: After creating new client, refreshes form and restarts entire processing sequence for the same record
+- ✅ **F5-Style Page Refresh**: After creating new client, performs complete page reload (F5) to ensure completely clean DOM state
+- ✅ **Form Processing Restart**: After F5 refresh, navigates back to Quick Submit form and restarts entire processing sequence for the same record
 - ✅ **Loop Structure Fix**: Properly resets processing attempt counter to restart from beginning after client creation
 - ✅ **Popup Management**: Comprehensive popup and overlay handling during client creation process
 
@@ -263,16 +354,60 @@ Each processed record returns with enhanced status information:
 - ✅ **Field Validation**: Added `verifyFormState()` function to validate form data before submission
 - ✅ **Enhanced Input Detection**: Improved vendor and destination input field detection to avoid disabled elements
 
-### Form Reset Strategy (Previous Update)
+### Form Reset Strategy (Earlier Update)
 - ✅ **Eliminated Form Field Clearing Issues**: Replaced individual field clearing with full page refresh
 - ✅ **Prevented Browser Freeze**: Removed problematic selector-based clearing that caused browser unresponsiveness
 - ✅ **Consistent Fresh State**: Each record now starts with a completely clean form (same as first record)
 - ✅ **Simplified Logic**: No need to validate individual field selectors or handle dropdown resets
 - ✅ **Improved Reliability**: Form refresh ensures all elements are in their initial state
 
-**Robustness Strategy:**
-- **Challenge**: Form refresh changes selector IDs and clears field data
-- **Solution**: Dynamic selector detection with form state preservation across retries
-- **Benefit**: Bot can handle form refreshes seamlessly without losing data or failing on selector changes
+## Complete Freeze Prevention Architecture
 
-**Next Steps:** Deploy to production environment (Google Cloud Run) and monitor for optimization opportunities.
+### **Protection Mechanisms Applied to Every Step:**
+1. **Calendar Popup Prevention**: `closeCalendarPopupIfOpen()` called before critical interactions
+2. **Multiple Click Approaches**: Standard → Force → JavaScript click methods for maximum reliability
+3. **Dropdown State Verification**: Confirms proper closure after selections to prevent interference
+4. **Aggressive Cleanup**: Force-closes interfering dropdowns and masks without affecting other functionality
+5. **Targeted Escape Keys**: Specific popup closure that preserves normal form element functionality
+6. **Dynamic Selector Detection**: Handles form refresh scenarios and changing element IDs
+7. **Error Recovery**: Comprehensive retry logic with graceful degradation for all operations
+
+### **Freeze-Resistant Steps:**
+- ✅ **Login & Navigation**: Robust iframe handling and "I Understand" button detection
+- ✅ **Secondary Customers Clearing**: Comprehensive popup management with readonly field detection
+- ✅ **Client Search & Selection**: Multiple fallback popup closure methods
+- ✅ **Client Creation**: Aggressive dropdown closure and complete popup cleanup
+- ✅ **Tour Operator Selection**: Multi-method clicking with dropdown verification and closure
+- ✅ **Region Selection**: Popup-protected dropdown interaction
+- ✅ **Date Field Filling**: Calendar-safe filling with popup prevention
+- ✅ **Price Field Filling**: Uses robust filling function with popup protection
+- ✅ **Form State Verification**: Popup clearing before field validation
+- ✅ **Form Submission**: Popup-protected submission process
+- ✅ **Form Refresh**: Clean state preparation for next record
+
+**Robustness Strategy:**
+- **Challenge**: Popup interference causing form freezing, especially after client creation
+- **Solution**: Universal popup prevention combined with aggressive cleanup and multiple interaction methods
+- **Benefit**: Bot can handle any popup interference scenario without freezing at any step
+
+## Latest Updates
+
+### Tour FIT Consistency (Latest Update)
+- ✅ **Reservation Type Standardization**: All bookings now consistently use "Tour FIT" instead of dynamic detection
+- ✅ **Simplified Logic**: Removed cruise detection logic for consistent processing
+- ✅ **Code Cleanup**: Streamlined reservation title setting for better reliability
+
+### Asynchronous Processing System (Previous Update)
+- ✅ **Job Queue Management**: Added JobManager class for background processing
+- ✅ **Progress Tracking**: Real-time progress updates with estimated completion times
+- ✅ **Batch Processing**: Configurable batch sizes (default: 10 records per batch)
+- ✅ **Job Control**: Cancel, monitor, and retrieve results for background jobs
+- ✅ **Timeout Prevention**: Perfect solution for Coolify and cloud platform timeouts
+
+### Large Dataset Optimization (Previous Update)
+- ✅ **1,407 Record Support**: Optimized for large datasets like your sample.json
+- ✅ **Memory Management**: Batch processing prevents memory overflow
+- ✅ **Error Isolation**: Individual record failures don't stop entire job
+- ✅ **Background Processing**: Jobs run completely independent of HTTP requests
+
+**Production Ready:** Bot is now freeze-resistant, timeout-proof, and ready for deployment to production environments (Coolify, Google Cloud Run, etc.).

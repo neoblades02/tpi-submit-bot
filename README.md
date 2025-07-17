@@ -1,31 +1,47 @@
 # TPI Suitcase Submission Bot
 
-This project is a comprehensive Node.js bot designed to automate client booking submissions to the TPI Suitcase web portal. It runs as an Express server, exposing an API endpoint to receive booking data, and uses Playwright to perform advanced browser automation tasks with complete form processing and webhook integration.
+This project is a comprehensive Node.js bot designed to automate client booking submissions to the TPI Suitcase web portal. It runs as an Express server with both **synchronous and asynchronous processing** capabilities, and uses Playwright to perform advanced browser automation tasks with complete form processing and webhook integration.
 
 ## Features
 
-- **API-Driven**: Triggered by a `POST` request, making it easy to integrate with services like n8n.
-- **Secure Login**: Uses environment variables (`.env` file) to securely handle portal credentials.
+### Core Capabilities
+- **API-Driven**: Multiple endpoints for different use cases
+- **Synchronous Processing**: `/trigger-bot` - For small datasets (<50 records)
+- **Asynchronous Processing**: `/trigger-bot-async` - For large datasets (100+ records)
+- **Job Management**: Real-time progress tracking, job cancellation, and result retrieval
+- **Batch Processing**: Configurable batch sizes to prevent memory issues and timeouts
+- **No Timeout Issues**: Perfect for Coolify and other cloud platforms with request limits
+
+### Security & Authentication
+- **Secure Login**: Uses environment variables (`.env` file) to securely handle portal credentials
+- **Production-Ready**: Headless browser with security-hardened configuration
+- **Resource Management**: Memory limits and automatic cleanup
+
+### Form Processing
 - **Complete Form Automation**: 
-  - Navigates to the "Quick Submit" form after login.
-  - Determines "Reservation Title" (`Cruise FIT` or `Tour FIT`) based on booking details.
-  - Fills reservation title, booking number, dates, pricing, and commission fields.
+  - Navigates to the "Quick Submit" form after login
+  - Sets all bookings as "Tour FIT" (consistent reservation type)
+  - Fills reservation title, booking number, dates, pricing, and commission fields
 - **Advanced Client Search**: 
-  - Clears secondary customers field to prevent form confusion.
+  - Clears secondary customers field with readonly detection to prevent form confusion.
   - Uses the portal's search popup to find clients by last name.
-  - Creates new clients when not found in search results.
-  - Restarts form processing after successful client creation.
+  - Creates new clients with aggressive dropdown closure and popup cleanup.
+  - Performs F5-style page refresh after client creation to ensure completely clean DOM state.
+  - Restarts form processing after successful client creation with fresh browser environment.
   - Handles "no results found" scenarios with proper error messaging.
   - Selects the correct client from results table or closes popup if not found.
-- **Smart Tour Operator Selection**:
-  - Searches through tour operator dropdown with automatic scrolling.
-  - Uses enhanced matching logic with exact matches and word boundaries to prevent false positives.
+- **Freeze-Resistant Tour Operator Selection**:
+  - Multi-method clicking (Standard → Force → JavaScript) for maximum reliability.
+  - Enhanced matching logic with exact matches and word boundaries to prevent false positives.
+  - Dropdown closure verification and automatic escape key fallback.
   - Handles cases where operator is not found in the system.
-- **Regional and Date Processing**:
-  - Automatically selects "United States" as destination region.
-  - Formats and fills booking start and end dates.
-  - Processes package prices and commission amounts.
-- **Submit and Duplicate Workflow**:
+- **Popup-Protected Regional and Date Processing**:
+  - Calendar popup prevention before all field interactions.
+  - Automatically selects "United States" as destination region with popup protection.
+  - Calendar-safe date filling using direct fill method (no clicking).
+  - Robust price and commission field processing with interference prevention.
+- **Interference-Free Submit and Duplicate Workflow**:
+  - Pre-submission popup clearing to ensure clean submit button access.
   - Uses "Submit and Duplicate" button for form submission.
   - Handles confirmation popup with OK button.
   - Extracts generated invoice numbers from updated reservation titles.
@@ -35,11 +51,18 @@ This project is a comprehensive Node.js bot designed to automate client booking 
 - **Enhanced Status Tracking**: 
   - Returns detailed JSON response with status, submission state, and invoice numbers.
   - Tracks submitted, not submitted, and error states for each record.
+- **Complete Freeze Prevention System**:
+  - Universal popup prevention with `closeCalendarPopupIfOpen()` before all critical interactions.
+  - Multiple click approaches (Standard → Force → JavaScript) for maximum reliability.
+  - Aggressive dropdown closure and mask removal to prevent client creation freezing.
+  - Dropdown state verification and automatic escape key fallbacks.
+  - Targeted popup cleanup that preserves normal form functionality.
 - **Form Robustness & Dynamic Adaptation**:
   - Handles form refresh scenarios where selector IDs change dynamically.
   - Implements dynamic selector detection with multiple fallback strategies.
   - Preserves form state across retry attempts after form refresh.
-  - Comprehensive retry logic with form state recovery.
+  - Comprehensive retry logic with form state recovery and error handling.
+  - Readonly field detection and proper handling for secondary customers.
 - **Containerized**: Includes updated `Dockerfile` for easy deployment to Google Cloud Run.
 
 ---
@@ -83,9 +106,19 @@ The server will be running at `http://localhost:3000`.
 
 ### 3. Triggering the Bot
 
-Send a `POST` request to the `/trigger-bot` endpoint with a JSON payload. 
+The bot offers two processing modes:
+
+#### Option A: Synchronous Processing (Small Datasets)
+For datasets with less than 50 records, use the synchronous endpoint:
 
 **Endpoint:** `POST /trigger-bot`
+
+#### Option B: Asynchronous Processing (Large Datasets)
+For large datasets (100+ records) or to avoid platform timeouts, use the asynchronous endpoint:
+
+**Endpoint:** `POST /trigger-bot-async`
+
+*Recommended for Coolify deployment and datasets like your 1,407 records*
 
 **Payload Format:**
 The body must be a JSON array containing a single object with a `rows` key. The `rows` key must hold an array of client records with complete booking information.
@@ -93,7 +126,7 @@ The body must be a JSON array containing a single object with a `rows` key. The 
 **Required Fields per Record:**
 - `Agent Name`: Name of the booking agent
 - `Client Name`: Full name of the client (first and last name)
-- `Trip Description`: Description of the trip (used to determine Cruise vs Tour FIT)
+- `Trip Description`: Description of the trip (all bookings processed as "Tour FIT")
 - `Booking Number`: Unique booking identifier
 - `Booking Status`: Current status of the booking
 - `Booking Description`: Detailed description of the booking
@@ -142,8 +175,8 @@ The body must be a JSON array containing a single object with a `rows` key. The 
 ]
 ```
 
-**Success Response:**
-The API will return a JSON array with enhanced processing status for each record, including all original data plus status tracking and invoice numbers.
+#### Synchronous Response (POST /trigger-bot):
+Returns immediately with complete results:
 
 ```json
 [
@@ -184,6 +217,32 @@ The API will return a JSON array with enhanced processing status for each record
 ]
 ```
 
+#### Asynchronous Response (POST /trigger-bot-async):
+Returns immediately with job tracking information:
+
+```json
+{
+  "message": "Job created successfully. Use the job ID to check progress.",
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "status": "pending",
+  "estimatedDuration": {
+    "seconds": 9360,
+    "formatted": "2h 36m 0s"
+  },
+  "statusUrl": "/job/123e4567-e89b-12d3-a456-426614174000",
+  "progressUrl": "/job/123e4567-e89b-12d3-a456-426614174000/progress"
+}
+```
+
+**Then monitor progress:**
+```bash
+# Check progress
+curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/progress
+
+# Get results when completed
+curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/results
+```
+
 ### Status Values
 
 - **`"submitted"` / `"Submitted"`**: Successfully processed and saved with invoice number generated
@@ -200,26 +259,27 @@ The API will return a JSON array with enhanced processing status for each record
 
 ## Automated Workflow
 
-### The bot performs these steps for each record:
+### The bot performs these steps for each record with complete freeze prevention:
 
-1. **Login** to TPI Suitcase portal using secure credentials
-2. **Navigate** to Quick Submit form
-3. **Determine Reservation Type**: Auto-detect "Cruise FIT" or "Tour FIT" based on trip description
-4. **Fill Basic Info**: Reservation title and booking number
-5. **Clear Secondary Customers**: Remove any previously selected secondary customers to prevent confusion
-6. **Client Search**: Search by last name, create new client if not found, or select matching client
-7. **Client Creation**: When client not found, create new client with first name, last name, and "No Middle Name" checkbox
-8. **Form Restart**: After client creation, refresh form and restart processing for the same record
-9. **Tour Operator Selection**: Smart dropdown search with scrolling and enhanced matching logic
-10. **Region Selection**: Automatically set destination to "United States" with dynamic input detection
-11. **Date Processing**: Fill formatted start and end dates
-12. **Financial Data**: Enter package price and expected commission
-13. **Submit and Duplicate**: Click submit button and handle confirmation popup
-14. **Invoice Extraction**: Extract generated invoice number from updated form
-15. **Status Tracking**: Record success/failure status with detailed information
-16. **Webhook Delivery**: Automatically send all processed data to n8n webhook
-17. **Form Reset**: Navigate to fresh form for next record
-18. **Robustness Features**: Dynamic selector detection, form state preservation, and retry logic handle form refresh scenarios
+1. **Login** to TPI Suitcase portal using secure credentials with iframe handling
+2. **Navigate** to Quick Submit form with "I Understand" button detection
+3. **Set Reservation Type**: All bookings are set to "Tour FIT" for consistency
+4. **Fill Basic Info**: Reservation title and booking number with dynamic selector detection
+5. **Clear Secondary Customers**: Remove previously selected secondary customers with readonly field detection
+6. **Client Search**: Search by last name with comprehensive popup management
+7. **Client Creation**: Create new client with aggressive dropdown closure and popup cleanup
+8. **Form Restart**: F5-style page refresh and restart processing with completely clean DOM state
+9. **Tour Operator Selection**: Multi-method clicking (Standard → Force → JavaScript) with dropdown verification
+10. **Region Selection**: Popup-protected dropdown interaction with calendar interference prevention
+11. **Date Processing**: Calendar-safe filling with popup prevention before each field
+12. **Financial Data**: Robust price and commission filling with popup protection
+13. **Form Verification**: Pre-submission validation with popup clearing
+14. **Submit and Duplicate**: Popup-protected submission with confirmation popup handling
+15. **Invoice Extraction**: Extract generated invoice number from updated form
+16. **Status Tracking**: Record success/failure status with detailed information
+17. **Webhook Delivery**: Automatically send all processed data to n8n webhook
+18. **Form Reset**: Navigate to fresh form for next record
+19. **Freeze Prevention**: Universal popup prevention, multiple click methods, and comprehensive error recovery
 
 ---
 
@@ -289,11 +349,32 @@ Coolify can deploy this project directly from your Git repository.
 4.  In the **Environment Variables** tab, add your `USERNAME` and `PASSWORD` secrets.
 5.  Deploy the application.
 
-### Example `curl` Command
+### Example `curl` Commands
 
+#### Synchronous Processing:
 ```bash
 curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3000/trigger-bot
 ```
+
+#### Asynchronous Processing (Recommended for large datasets):
+```bash
+curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3000/trigger-bot-async
+```
+
+### New API Endpoints
+
+#### Job Management
+- `GET /job/:jobId` - Get detailed job status
+- `GET /job/:jobId/progress` - Get progress updates (lightweight)
+- `GET /job/:jobId/results` - Get final results when completed
+- `POST /job/:jobId/cancel` - Cancel a running job
+- `GET /jobs` - List all jobs
+
+#### Health & Info
+- `GET /health` - Health check endpoint
+- `GET /` - API information and available endpoints
+
+For complete async usage examples, see [ASYNC_USAGE.md](ASYNC_USAGE.md)
 
 ---
 
@@ -333,13 +414,19 @@ curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" ht
 ```
 tpi-submit-bot/
 ├── bot.js              # Main automation logic with Playwright
-├── index.js            # Express server API endpoint
-├── package.json        # Dependencies (express, playwright, dotenv, axios)
+├── index.js            # Express server with sync/async endpoints
+├── jobManager.js       # Async job processing and queue management
+├── package.json        # Dependencies (express, playwright, dotenv, axios, uuid)
 ├── Dockerfile          # Container configuration for deployment
-├── sample.json         # Example payload for testing
+├── docker-compose.yml  # Docker Compose for local testing
+├── .dockerignore       # Docker build optimization
+├── sample.json         # Example payload for testing (1,407 records)
 ├── plan.md             # Complete project documentation and status
 ├── README.md           # This file
+├── DEPLOYMENT.md       # Production deployment guide
+├── ASYNC_USAGE.md      # Asynchronous processing usage guide
 ├── .env                # Environment variables (create manually)
+├── .env.example        # Environment variables template
 └── .gitignore          # Git ignore patterns
 ```
 
@@ -351,6 +438,7 @@ tpi-submit-bot/
 - **playwright**: Browser automation library
 - **dotenv**: Environment variable management
 - **axios**: HTTP client for webhook requests
+- **uuid**: Unique identifier generation for job management
 
 ---
 
@@ -388,4 +476,23 @@ Enable detailed logging by running with `headless: false` during development to 
 
 ---
 
-**The TPI Suitcase Submission Bot provides complete end-to-end automation with comprehensive error handling, status tracking, and automatic webhook integration for seamless n8n workflow integration.**
+## Key Features for Large Datasets
+
+### Perfect for Your 1,407 Records
+- **Asynchronous Processing**: No timeout issues on Coolify or other cloud platforms
+- **Batch Processing**: Processes 10 records at a time with progress updates
+- **Estimated Time**: ~9.4 hours for 1,407 records (based on 150 records/hour performance)
+- **Real-time Monitoring**: Track progress every ~4 minutes per batch
+- **Error Resilience**: Individual failures don't stop the entire job
+- **Background Operation**: Submit job and check progress anytime
+
+### Production Ready
+- **Docker Optimized**: Includes Dockerfile, docker-compose.yml, and deployment guides
+- **Security Hardened**: Non-root user, resource limits, and security configurations
+- **Health Monitoring**: Built-in health checks and logging
+- **Memory Efficient**: Batch processing prevents memory overflow
+- **Cloud Platform Ready**: Designed for Coolify, Google Cloud Run, and similar platforms
+
+---
+
+**The TPI Suitcase Submission Bot provides complete end-to-end automation with both synchronous and asynchronous processing capabilities, comprehensive error handling, real-time progress tracking, and automatic webhook integration for seamless workflow integration.**

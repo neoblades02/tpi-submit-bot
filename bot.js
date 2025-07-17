@@ -2,11 +2,23 @@ require('dotenv').config();
 const { chromium } = require('playwright');
 const axios = require('axios');
 
-async function loginAndProcess(data) {
+async function loginAndProcess(data, options = {}) {
     let browser = null;
     try {
         console.log('Launching browser...');
-        browser = await chromium.launch({ headless: false }); // Use headless: true in production
+        browser = await chromium.launch({ 
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
+        });
         const context = await browser.newContext();
         const page = await context.newPage();
 
@@ -40,14 +52,8 @@ async function loginAndProcess(data) {
         const signInButton = await frame.waitForSelector('#nextbtn:has-text("Sign In")', { timeout: 60000 });
         await signInButton.click();
 
-        console.log('Waiting for page to load after login...');
-        await page.waitForURL('https://my.tpisuitcase.com/#Page:CORE', { timeout: 60000 });
-
-        console.log('Page loaded successfully. Waiting for 10 seconds...');
-        await page.waitForTimeout(10000);
-
-        // Check for "I Understand" button that sometimes appears after login
-        console.log('Checking for "I Understand" button...');
+        // Check for "I Understand" button immediately after sign in but before page load
+        console.log('Checking for "I Understand" button after sign in...');
         try {
             const iUnderstandButton = await page.waitForSelector('#continue_button', { timeout: 5000 });
             if (iUnderstandButton) {
@@ -59,6 +65,12 @@ async function loginAndProcess(data) {
         } catch (e) {
             console.log('No "I Understand" button found, continuing...');
         }
+
+        console.log('Waiting for page to load after login...');
+        await page.waitForURL('https://my.tpisuitcase.com/#Page:CORE', { timeout: 60000 });
+
+        console.log('Page loaded successfully. Waiting for 10 seconds...');
+        await page.waitForTimeout(10000);
 
         console.log('Login and initial wait complete!');
 
@@ -114,9 +126,7 @@ async function loginAndProcess(data) {
 
                 // 1. Determine Reservation Title
                 if (processingAttempt === 1) {
-                    formState.reservationTitle = record['Trip Description'].toLowerCase().includes('cruise') || record['Booking Description'].toLowerCase().includes('cruise')
-                        ? 'Cruise FIT'
-                        : 'Tour FIT';
+                    formState.reservationTitle = 'Tour FIT';
                     formState.bookingNumber = record['Booking Number'];
                     formState.tourOperator = record['Tour Operator'];
                     formState.startDate = formatDate(record['Booking Start Date']);
@@ -193,8 +203,13 @@ async function loginAndProcess(data) {
                     if (clientCreated) {
                         console.log(`  - New client created successfully, restarting form processing...`);
                         
-                        // Refresh the form to start fresh
-                        console.log(`  - Refreshing form to restart processing with new client...`);
+                        // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+                        console.log(`  - F5 refreshing entire page to restart processing with new client...`);
+                        await page.reload({ waitUntil: 'networkidle' });
+                        await page.waitForTimeout(3000);
+                        
+                        // Navigate back to Quick Submit form after F5 refresh
+                        console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
                         await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
                         
                         // Wait for the form to load
@@ -207,8 +222,27 @@ async function loginAndProcess(data) {
                         
                         console.log(`  - Form refreshed, restarting entire record processing from beginning...`);
                         
-                        // Clear secondary customers field again after client creation
-                        await clearSecondaryCustomersField(page);
+                        // Close any remaining popups after client creation (targeted approach)
+                        try {
+                            // Only close client search popup if it's still open
+                            const searchPopup = await page.$('#zc-advanced-search');
+                            if (searchPopup) {
+                                const isVisible = await searchPopup.isVisible();
+                                if (isVisible) {
+                                    const closeBtn = await page.$('#zc-advanced-search .popupClose, #zc-advanced-search i.fa.fa-close');
+                                    if (closeBtn) {
+                                        await closeBtn.click();
+                                        console.log(`  - Closed search popup after client creation`);
+                                        await page.waitForTimeout(500);
+                                    }
+                                }
+                            }
+                            
+                            // Wait a bit more for form to fully settle after client creation
+                            await page.waitForTimeout(1000);
+                        } catch (error) {
+                            console.log(`  - Note: Error closing popups after client creation: ${error.message}`);
+                        }
                         
                         // Reset processingAttempt to restart from the beginning
                         processingAttempt = 0; // Will be incremented to 1 at the end of the loop
@@ -367,8 +401,13 @@ async function loginAndProcess(data) {
                         if (clientCreated) {
                             console.log(`  - New client created successfully, restarting form processing...`);
                             
-                            // Refresh the form to start fresh
-                            console.log(`  - Refreshing form to restart processing with new client...`);
+                            // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+                            console.log(`  - F5 refreshing entire page to restart processing with new client...`);
+                            await page.reload({ waitUntil: 'networkidle' });
+                            await page.waitForTimeout(3000);
+                            
+                            // Navigate back to Quick Submit form after F5 refresh
+                            console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
                             await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
                             
                             // Wait for the form to load
@@ -381,8 +420,27 @@ async function loginAndProcess(data) {
                             
                             console.log(`  - Form refreshed, continuing to next attempt of record processing...`);
                             
-                            // Clear secondary customers field again after client creation
-                            await clearSecondaryCustomersField(page);
+                            // Close any remaining popups after client creation (targeted approach)
+                            try {
+                                // Only close client search popup if it's still open
+                                const searchPopup = await page.$('#zc-advanced-search');
+                                if (searchPopup) {
+                                    const isVisible = await searchPopup.isVisible();
+                                    if (isVisible) {
+                                        const closeBtn = await page.$('#zc-advanced-search .popupClose, #zc-advanced-search i.fa.fa-close');
+                                        if (closeBtn) {
+                                            await closeBtn.click();
+                                            console.log(`  - Closed search popup after client creation`);
+                                            await page.waitForTimeout(500);
+                                        }
+                                    }
+                                }
+                                
+                                // Wait a bit more for form to fully settle after client creation
+                                await page.waitForTimeout(1000);
+                            } catch (error) {
+                                console.log(`  - Note: Error closing popups after client creation: ${error.message}`);
+                            }
                             
                             // Continue to next processing attempt - this will restart the entire form flow
                             processingAttempt = 0; // Reset to restart from beginning
@@ -478,8 +536,10 @@ async function loginAndProcess(data) {
             processedData.push(record);
         }
 
-        // Send processed data to webhook
-        await sendToWebhook(processedData);
+        // Send processed data to webhook (only if not disabled)
+        if (options.sendWebhook !== false) {
+            await sendToWebhook(processedData);
+        }
 
         return processedData;
 
@@ -498,6 +558,50 @@ async function loginAndProcess(data) {
 async function clearSecondaryCustomersField(page) {
     try {
         console.log('  🧹 Clearing Secondary Customers field...');
+        
+        // Only close secondary customers specific dropdown if it's open
+        try {
+            console.log('  🚪 Checking for open secondary customers dropdown...');
+            
+            // Check if secondary customers dropdown is specifically open
+            const secondaryDropdownOpen = await page.evaluate(() => {
+                const secondaryContainer = document.querySelector('.select2-container.zc-Secondary_Customers');
+                return secondaryContainer && (
+                    secondaryContainer.classList.contains('select2-dropdown-open') ||
+                    secondaryContainer.classList.contains('select2-container-active')
+                );
+            });
+            
+            if (secondaryDropdownOpen) {
+                console.log('  🚪 Secondary customers dropdown is open, closing it...');
+                
+                // Only close secondary customers dropdown specifically
+                await page.evaluate(() => {
+                    const secondaryContainer = document.querySelector('.select2-container.zc-Secondary_Customers');
+                    if (secondaryContainer) {
+                        secondaryContainer.classList.remove('select2-dropdown-open');
+                        secondaryContainer.classList.remove('select2-container-active');
+                    }
+                    
+                    // Only close secondary customers related drops
+                    const secondaryDrops = document.querySelectorAll('.select2-drop.Secondary_Customers-switch-search');
+                    secondaryDrops.forEach(drop => {
+                        drop.style.display = 'none';
+                        drop.style.visibility = 'hidden';
+                    });
+                });
+                
+                // Single escape to close just the secondary dropdown
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(500);
+                
+                console.log('  ✅ Secondary customers dropdown closed');
+            } else {
+                console.log('  ✅ No secondary customers dropdown open');
+            }
+        } catch (e) {
+            console.log('  ⚠️ Error checking secondary customers dropdown: ' + e.message);
+        }
         
         // Find the secondary customers multi-select container
         const secondaryCustomersContainer = await page.locator('.select2-container.zc-Secondary_Customers').first();
@@ -526,16 +630,66 @@ async function clearSecondaryCustomersField(page) {
                 console.log('  ✅ Secondary customers field is already empty');
             }
             
-            // Also clear the input field if it has any text
+            // Also clear the input field if it has any text and is editable
             const secondaryInput = await page.locator('input[name="zc-sel2-inp-Secondary_Customers"]').first();
             const inputExists = await secondaryInput.isVisible().catch(() => false);
             
             if (inputExists) {
-                await secondaryInput.fill('');
-                console.log('  ✅ Secondary customers input field cleared');
+                // Check if the input is editable (not readonly)
+                const isEditable = await secondaryInput.evaluate(input => {
+                    return !input.hasAttribute('readonly') && !input.disabled;
+                }).catch(() => false);
+                
+                if (isEditable) {
+                    await secondaryInput.fill('');
+                    console.log('  ✅ Secondary customers input field cleared');
+                } else {
+                    console.log('  ℹ️ Secondary customers input field is readonly, skipping clear');
+                }
+            }
+            
+            // Force close any secondary customers dropdown that might have opened
+            try {
+                console.log('  🚪 Ensuring secondary customers dropdown is closed...');
+                
+                // Remove focus from the secondary customers field
+                await page.evaluate(() => {
+                    const secondaryInput = document.querySelector('input[name="zc-sel2-inp-Secondary_Customers"]');
+                    if (secondaryInput) {
+                        secondaryInput.blur();
+                    }
+                });
+                
+                // Additional dropdown closure specifically for secondary customers
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(500);
+                
+                // Click somewhere else to ensure focus is removed
+                await page.click('body', { position: { x: 100, y: 100 } });
+                await page.waitForTimeout(500);
+                
+                console.log('  ✅ Secondary customers dropdown ensured closed');
+            } catch (e) {
+                console.log(`  ⚠️ Error ensuring secondary customers dropdown closed: ${e.message}`);
             }
         } else {
             console.log('  ✅ Secondary customers field not found or not visible');
+        }
+        
+        // Gentle final check - only remove focus from secondary customers field
+        try {
+            console.log('  ✅ Secondary customers field cleared, ready for client search');
+            
+            // Just ensure focus is not on secondary customers field
+            await page.evaluate(() => {
+                const secondaryInput = document.querySelector('input[name="zc-sel2-inp-Secondary_Customers"]');
+                if (secondaryInput && document.activeElement === secondaryInput) {
+                    secondaryInput.blur();
+                }
+            });
+            
+        } catch (e) {
+            console.log(`  ⚠️ Error in final focus check: ${e.message}`);
         }
         
     } catch (error) {
@@ -601,6 +755,55 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
             // Wait for the dropdown to be fully open and search for the Add New Customer button
             console.log(`    🔍 Waiting for dropdown to open and looking for Add New Customer button...`);
             
+            // First, ensure any secondary customers dropdown is closed that might be interfering
+            try {
+                await page.evaluate(() => {
+                    // Close specifically the secondary customers dropdown that might be interfering
+                    const secondaryDrops = document.querySelectorAll('.select2-drop.Secondary_Customers-switch-search');
+                    secondaryDrops.forEach(drop => {
+                        drop.style.display = 'none';
+                        drop.classList.remove('select2-drop-active');
+                    });
+                    
+                    // Remove secondary customers mask if it exists
+                    const masks = document.querySelectorAll('#select2-drop-mask');
+                    masks.forEach(mask => {
+                        if (mask.style.display !== 'none') {
+                            // Only remove if it's not related to the main customer dropdown
+                            const isMainCustomerMask = document.querySelector('.select2-drop.Customer-switch-search.select2-drop-active');
+                            if (!isMainCustomerMask) {
+                                mask.style.display = 'none';
+                            }
+                        }
+                    });
+                });
+                console.log(`    🚪 Closed interfering secondary customers dropdown`);
+            } catch (e) {
+                console.log(`    ⚠️ Could not close interfering dropdown: ${e.message}`);
+            }
+            
+            // Force the customer dropdown to be visible
+            try {
+                await page.evaluate(() => {
+                    // Find the customer dropdown and make it visible
+                    const customerDropdown = document.querySelector('.select2-drop.Customer-switch-search.select2-drop-active');
+                    if (customerDropdown) {
+                        customerDropdown.style.display = 'block';
+                        customerDropdown.style.visibility = 'visible';
+                        customerDropdown.classList.remove('select2-display-none');
+                        
+                        // Also make sure the mask is visible if needed
+                        const mask = document.querySelector('#select2-drop-mask');
+                        if (mask) {
+                            mask.style.display = 'block';
+                        }
+                    }
+                });
+                console.log(`    ✅ Forced customer dropdown to be visible`);
+            } catch (e) {
+                console.log(`    ⚠️ Could not force dropdown visible: ${e.message}`);
+            }
+            
             // Wait for the select2-drop to be visible with the client list
             await page.waitForSelector('.select2-drop.Customer-switch-search.select2-drop-active', { timeout: 10000 });
             
@@ -624,31 +827,78 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
             
             console.log(`    🔍 Add New Customer element status:`, addNewExists);
             
-            // Try multiple selectors for the Add New Customer button
+            // Try multiple selectors for the Add New Customer button - don't wait for visibility, just presence
             let addNewButton = null;
             const addNewSelectors = [
                 '#addNew',
                 '.addnewparent',
                 '[id="addNew"]',
                 'div[id="addNew"]',
-                'div.addnewparent',
-                'div:has-text("Add New Customer")'
+                'div.addnewparent'
             ];
             
             for (const selector of addNewSelectors) {
                 try {
                     console.log(`    🔍 Trying selector: ${selector}`);
-                    await page.waitForSelector(selector, { timeout: 3000 });
-                    addNewButton = selector;
-                    console.log(`    ✅ Found Add New Customer button with selector: ${selector}`);
-                    break;
+                    const elements = await page.locator(selector).all();
+                    
+                    // Look for the element that's actually in the main customer dropdown
+                    for (const element of elements) {
+                        const isInMainDropdown = await element.evaluate((el) => {
+                            // Check if this element is inside the main customer dropdown
+                            const customerDrop = el.closest('.select2-drop.Customer-switch-search');
+                            return customerDrop !== null;
+                        });
+                        
+                        if (isInMainDropdown) {
+                            addNewButton = selector;
+                            console.log(`    ✅ Found Add New Customer button in main dropdown with selector: ${selector}`);
+                            break;
+                        }
+                    }
+                    
+                    if (addNewButton) break;
                 } catch (e) {
                     console.log(`    ⚠️ Selector ${selector} failed: ${e.message}`);
                 }
             }
             
             if (!addNewButton) {
-                throw new Error('Could not find Add New Customer button with any selector');
+                // Try to force make the button and its container visible
+                try {
+                    await page.evaluate(() => {
+                        // Find all customer dropdowns and make them visible
+                        const customerDropdowns = document.querySelectorAll('.select2-drop.Customer-switch-search');
+                        customerDropdowns.forEach(dropdown => {
+                            dropdown.style.display = 'block';
+                            dropdown.style.visibility = 'visible';
+                            dropdown.classList.remove('select2-display-none');
+                        });
+                        
+                        // Make all addNew buttons in customer dropdowns visible
+                        const addNewElements = document.querySelectorAll('#addNew');
+                        addNewElements.forEach(element => {
+                            const customerDrop = element.closest('.select2-drop.Customer-switch-search');
+                            if (customerDrop) {
+                                // Make the parent dropdown visible first
+                                customerDrop.style.display = 'block';
+                                customerDrop.style.visibility = 'visible';
+                                customerDrop.classList.remove('select2-display-none');
+                                
+                                // Then make the button visible
+                                element.style.display = 'block';
+                                element.style.visibility = 'visible';
+                                element.style.height = 'auto';
+                                element.style.width = 'auto';
+                                element.style.opacity = '1';
+                            }
+                        });
+                    });
+                    addNewButton = '#addNew';
+                    console.log(`    ✅ Forced customer dropdown and Add New Customer button to be visible`);
+                } catch (e) {
+                    throw new Error('Could not find Add New Customer button with any selector');
+                }
             }
             
             // Click the "Add New Customer" button
@@ -718,32 +968,52 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
                 throw new Error('All click methods failed for Add New Customer button');
             }
             
-            // Wait for the popup to load and ensure dropdown is closed
-            console.log(`    ⏳ Waiting for new client popup to load...`);
-            await page.waitForTimeout(2000);
-            
-            // Close the dropdown if it's still open (this might help with the freezing issue)
+            // Immediately close the customer dropdown to prevent interference
+            console.log(`    🚪 Closing customer dropdown immediately after Add New Customer click...`);
             try {
                 await page.evaluate(() => {
-                    // Hide the dropdown
-                    const dropdown = document.querySelector('.select2-drop.Customer-switch-search.select2-drop-active');
-                    if (dropdown) {
+                    // Force close all customer dropdowns and masks
+                    const dropdowns = document.querySelectorAll('.select2-drop.Customer-switch-search');
+                    dropdowns.forEach(dropdown => {
                         dropdown.style.display = 'none';
-                    }
+                        dropdown.classList.remove('select2-drop-active');
+                        dropdown.classList.add('select2-display-none');
+                    });
                     
-                    // Also ensure the mask is hidden
-                    const mask = document.getElementById('select2-drop-mask');
-                    if (mask) {
-                        mask.style.display = 'none';
-                    }
+                    // Hide select2 masks (but don't remove from DOM to avoid breaking other dropdowns)
+                    const masks = document.querySelectorAll('#select2-drop-mask, .select2-drop-mask');
+                    masks.forEach(mask => {
+                        // Only hide masks that are related to customer dropdowns, not all masks
+                        const isCustomerMask = mask.previousElementSibling && 
+                                             mask.previousElementSibling.classList && 
+                                             mask.previousElementSibling.classList.contains('Customer-switch-search');
+                        if (isCustomerMask || masks.length === 1) {
+                            mask.style.display = 'none';
+                            mask.style.visibility = 'hidden';
+                            // Don't remove from DOM to avoid breaking other functionality
+                        }
+                    });
+                    
+                    // Remove active states from customer containers
+                    const containers = document.querySelectorAll('.select2-container.zc-Customer');
+                    containers.forEach(container => {
+                        container.classList.remove('select2-dropdown-open');
+                        container.classList.remove('select2-container-active');
+                    });
+                    
+                    // Press Escape to close any remaining dropdowns
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' }));
                 });
-                console.log(`    🚪 Closed dropdown to prevent conflicts with popup`);
+                
+                await page.keyboard.press('Escape');
+                console.log(`    ✅ Customer dropdown force-closed`);
             } catch (e) {
-                console.log(`    ⚠️ Could not close dropdown: ${e.message}`);
+                console.log(`    ⚠️ Error closing customer dropdown: ${e.message}`);
             }
             
-            // Wait a bit more for the popup to fully load
-            await page.waitForTimeout(1000);
+            // Wait for the popup to load after ensuring dropdown is closed
+            console.log(`    ⏳ Waiting for new client popup to load...`);
+            await page.waitForTimeout(1500);
             
             // Fill in the first name
             console.log(`    📝 Filling first name: ${firstName}`);
@@ -843,8 +1113,13 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
                 console.log(`    ⚠️ Error closing popups: ${e.message}`);
             }
             
-            // Refresh the form to start fresh
-            console.log(`    🔄 Refreshing form after client creation...`);
+            // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+            console.log(`    🔄 F5 refreshing entire page after client creation to ensure completely clean DOM state...`);
+            await page.reload({ waitUntil: 'networkidle' });
+            await page.waitForTimeout(3000);
+            
+            // Navigate back to Quick Submit form after F5 refresh
+            console.log(`    🔄 Navigating back to Quick Submit form after F5 refresh...`);
             await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
             
             // Wait for the form to load
@@ -892,6 +1167,35 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
 async function searchAndSelectTourOperator(page, tourOperator) {
     try {
         console.log(`    🔍 Searching for tour operator: ${tourOperator}`);
+        
+        // Pre-search cleanup - ensure no interfering elements from client creation
+        try {
+            console.log(`    🧹 Pre-search cleanup for tour operator dropdown...`);
+            
+            // Close any lingering popups that might interfere
+            await page.keyboard.press('Escape');
+            await page.waitForTimeout(500);
+            
+            // Close any remaining customer dropdowns that might interfere
+            await page.evaluate(() => {
+                // Close any customer-related dropdowns that might still be open
+                const customerDropdowns = document.querySelectorAll('.select2-drop.Customer-switch-search');
+                customerDropdowns.forEach(dropdown => {
+                    dropdown.style.display = 'none';
+                    dropdown.classList.remove('select2-drop-active');
+                });
+                
+                // Ensure vendor dropdown container is not affected by customer dropdown states
+                const vendorContainer = document.querySelector('.select2-container.zc-Vendor');
+                if (vendorContainer) {
+                    vendorContainer.classList.remove('select2-dropdown-open', 'select2-container-active');
+                }
+            });
+            
+            console.log(`    ✅ Pre-search cleanup completed`);
+        } catch (e) {
+            console.log(`    ⚠️ Pre-search cleanup warning: ${e.message}`);
+        }
         
         // Find the dropdown using dynamic selector
         const dropdownSelector = await findDynamicSelector(page, 'vendor_dropdown');
@@ -944,39 +1248,75 @@ async function searchAndSelectTourOperator(page, tourOperator) {
             return false;
         }
         
-        await page.waitForTimeout(1000);
+        // Verify dropdown state and wait for it to be fully open
+        console.log(`    🔍 Verifying dropdown opened successfully...`);
+        try {
+            // Wait for dropdown to be fully open with multiple indicators
+            await page.waitForSelector('.select2-drop.select2-drop-active', { timeout: 5000 });
+            console.log(`    ✅ Dropdown confirmed open`);
+        } catch (e) {
+            console.log(`    ⚠️ Dropdown may not be fully open, continuing anyway...`);
+        }
         
-        // Find the search input field using dynamic selector
-        const inputSelector = await findDynamicSelector(page, 'vendor_input');
+        await page.waitForTimeout(1500); // Extended wait for post-client-creation scenarios
+        
+        // Find the search input field using dynamic selector with retry
+        let inputSelector = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            inputSelector = await findDynamicSelector(page, 'vendor_input');
+            if (inputSelector) {
+                console.log(`    ✅ Found vendor input selector on attempt ${attempt}`);
+                break;
+            }
+            console.log(`    ⚠️ Vendor input not found, attempt ${attempt}/3`);
+            await page.waitForTimeout(1000);
+        }
+        
         if (!inputSelector) {
-            console.log(`    ❌ Could not find vendor input field`);
+            console.log(`    ❌ Could not find vendor input field after 3 attempts`);
             return false;
         }
         
         // Wait for the search input field to appear and ensure it's the correct one
-        await page.waitForTimeout(1000); // Give dropdown time to fully open
+        await page.waitForTimeout(1000); // Give dropdown time to fully stabilize
         
-        // Find the correct search input (enabled and visible)
+        // Find the correct search input (enabled and visible) with retry logic
         let searchInputElement = null;
-        const inputElements = await page.locator(inputSelector).all();
         
-        for (const element of inputElements) {
-            try {
-                const isVisible = await element.isVisible();
-                const isEnabled = await element.isEnabled();
-                const classList = await element.getAttribute('class') || '';
-                
-                if (isVisible && isEnabled && (classList.includes('select2-input') || classList.includes('select2-focused'))) {
-                    searchInputElement = element;
-                    break;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`    🔍 Looking for search input element (attempt ${attempt}/3)...`);
+            
+            const inputElements = await page.locator(inputSelector).all();
+            console.log(`    📋 Found ${inputElements.length} potential input elements`);
+            
+            for (const element of inputElements) {
+                try {
+                    const isVisible = await element.isVisible();
+                    const isEnabled = await element.isEnabled();
+                    const classList = await element.getAttribute('class') || '';
+                    const placeholder = await element.getAttribute('placeholder') || '';
+                    
+                    console.log(`    🔍 Checking input: visible=${isVisible}, enabled=${isEnabled}, class="${classList}", placeholder="${placeholder}"`);
+                    
+                    if (isVisible && isEnabled && (classList.includes('select2-input') || classList.includes('select2-focused') || placeholder.toLowerCase().includes('search'))) {
+                        searchInputElement = element;
+                        console.log(`    ✅ Found suitable search input element`);
+                        break;
+                    }
+                } catch (e) {
+                    console.log(`    ⚠️ Error checking input element: ${e.message}`);
+                    continue;
                 }
-            } catch (e) {
-                continue;
             }
+            
+            if (searchInputElement) break;
+            
+            console.log(`    ⚠️ No suitable input found on attempt ${attempt}, waiting...`);
+            await page.waitForTimeout(1500);
         }
         
         if (!searchInputElement) {
-            console.log(`    ❌ Could not find enabled search input field`);
+            console.log(`    ❌ Could not find enabled search input field after 3 attempts`);
             return false;
         }
         
@@ -1002,20 +1342,78 @@ async function searchAndSelectTourOperator(page, tourOperator) {
             await searchInputElement.fill(searchTerm);
             await page.waitForTimeout(1500); // Wait for search results to load
             
-            // Wait for results to appear - use a more flexible selector
-            try {
-                await page.waitForSelector('ul.select2-results li.select2-result', { timeout: 3000 });
-            } catch (e) {
-                console.log(`    ❌ No results found for "${searchTerm}"`);
-                continue;
+            // Wait for results to appear - use multiple selectors and longer timeout
+            let resultsFound = false;
+            const resultSelectors = [
+                'ul.select2-results li.select2-result',
+                'ul#select2-results-18 li',
+                '.select2-results li',
+                'ul[id*="select2-results"] li'
+            ];
+            
+            for (const selector of resultSelectors) {
+                try {
+                    await page.waitForSelector(selector, { timeout: 2000 });
+                    resultsFound = true;
+                    console.log(`    ✅ Found results with selector: ${selector}`);
+                    break;
+                } catch (e) {
+                    // Try next selector
+                }
+            }
+            
+            if (!resultsFound) {
+                // Try one more time with longer timeout for the main selector
+                try {
+                    await page.waitForSelector('ul.select2-results li.select2-result', { timeout: 5000 });
+                    resultsFound = true;
+                    console.log(`    ✅ Found results with extended timeout`);
+                } catch (e) {
+                    console.log(`    ❌ No results found for "${searchTerm}" after trying all selectors`);
+                    continue;
+                }
             }
             
             // Check if we found exact or partial matches in the dropdown
-            const options = await page.locator('ul.select2-results li.select2-result').all();
+            let options = [];
+            
+            // Try multiple selectors to find the options, including malformed DOM structures
+            const extendedSelectors = [
+                ...resultSelectors,
+                '.select2-result-label',  // Direct label selection for malformed DOM
+                '[role="option"]',        // Any element with option role
+                '.select2-result',        // Any select2 result
+                'li[role="presentation"]' // List items with presentation role
+            ];
+            
+            for (const selector of extendedSelectors) {
+                try {
+                    const foundOptions = await page.locator(selector).all();
+                    if (foundOptions.length > 0) {
+                        options = foundOptions;
+                        console.log(`    ✅ Found ${options.length} options with selector: ${selector}`);
+                        break;
+                    }
+                } catch (e) {
+                    // Try next selector
+                }
+            }
+            
+            if (options.length === 0) {
+                console.log(`    ⚠️ No options found in dropdown for "${searchTerm}"`);
+                continue;
+            }
+            
+            // Debug: Log all found options
+            console.log(`    🔍 Checking ${options.length} options for matches...`);
             
             for (const option of options) {
                 const text = await option.innerText();
                 const cleanText = text.toLowerCase().trim();
+                
+                // Debug: Log the option text being checked
+                console.log(`    📋 Checking option: "${text}"`);
+                
                 const cleanTourOperator = tourOperator.toLowerCase().trim();
                 
                 // Remove parentheses and their content for comparison
@@ -1024,9 +1422,110 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 // Check for exact match first (highest priority)
                 if (cleanText === cleanTourOperator || cleanTextWithoutParens === cleanTourOperator) {
                     console.log(`    ✅ Found exact match: "${text}" for search "${searchTerm}"`);
-                    await option.click();
-                    await page.waitForTimeout(1000);
-                    return true;
+                    
+                    // Try multiple click approaches for better reliability, especially for malformed DOM
+                    let clickSuccessful = false;
+                    
+                    // Method 1: Standard click
+                    try {
+                        await option.click();
+                        await page.waitForTimeout(800); // Wait to see if click registered
+                        clickSuccessful = true;
+                        console.log(`    ✅ Standard click successful`);
+                    } catch (e) {
+                        console.log(`    ⚠️ Standard click failed: ${e.message}`);
+                    }
+                    
+                    // Method 2: Try clicking on the result label (for malformed DOM)
+                    if (!clickSuccessful) {
+                        try {
+                            const resultLabel = option.locator('.select2-result-label').first();
+                            const labelExists = await resultLabel.isVisible().catch(() => false);
+                            if (labelExists) {
+                                await resultLabel.click();
+                                await page.waitForTimeout(800);
+                                clickSuccessful = true;
+                                console.log(`    ✅ Result label click successful`);
+                            }
+                        } catch (e) {
+                            console.log(`    ⚠️ Result label click failed: ${e.message}`);
+                        }
+                    }
+                    
+                    // Method 3: Force click if standard failed
+                    if (!clickSuccessful) {
+                        try {
+                            // Check if element is still available before force click
+                            const isStillVisible = await option.isVisible().catch(() => false);
+                            if (isStillVisible) {
+                                await option.click({ force: true });
+                                await page.waitForTimeout(800); // Wait to see if click registered
+                                clickSuccessful = true;
+                                console.log(`    ✅ Force click successful`);
+                            } else {
+                                console.log(`    ℹ️ Element no longer visible, skipping force click`);
+                            }
+                        } catch (e) {
+                            console.log(`    ⚠️ Force click failed: ${e.message}`);
+                        }
+                    }
+                    
+                    // Method 4: JavaScript click if others failed
+                    if (!clickSuccessful) {
+                        try {
+                            // Final check if element is still in DOM before JavaScript click
+                            const elementExists = await option.evaluate(el => el && el.parentNode).catch(() => false);
+                            if (elementExists) {
+                                await option.evaluate(el => el.click());
+                                await page.waitForTimeout(800); // Wait to see if click registered
+                                clickSuccessful = true;
+                                console.log(`    ✅ JavaScript click successful`);
+                            } else {
+                                console.log(`    ℹ️ Element no longer in DOM, skipping JavaScript click`);
+                            }
+                        } catch (e) {
+                            console.log(`    ⚠️ JavaScript click failed: ${e.message}`);
+                        }
+                    }
+                    
+                    // Method 5: Try clicking by text content (last resort for malformed DOM)
+                    if (!clickSuccessful) {
+                        try {
+                            await page.click(`text="${text}"`, { timeout: 2000 });
+                            await page.waitForTimeout(800);
+                            clickSuccessful = true;
+                            console.log(`    ✅ Text-based click successful`);
+                        } catch (e) {
+                            console.log(`    ⚠️ Text-based click failed: ${e.message}`);
+                        }
+                    }
+                    
+                    if (clickSuccessful) {
+                        await page.waitForTimeout(1500);
+                        
+                        // Verify dropdown closed and selection was successful
+                        try {
+                            const dropdownClosed = await page.evaluate(() => {
+                                const results = document.querySelector('#select2-results-18');
+                                return !results || results.style.display === 'none' || !results.offsetParent;
+                            });
+                            
+                            if (dropdownClosed) {
+                                console.log(`    ✅ Tour operator selection confirmed - dropdown closed`);
+                            } else {
+                                console.log(`    ⚠️ Dropdown still open, pressing Escape`);
+                                await page.keyboard.press('Escape');
+                                await page.waitForTimeout(500);
+                            }
+                        } catch (e) {
+                            console.log(`    ℹ️ Could not verify dropdown closure: ${e.message}`);
+                        }
+                        
+                        return true;
+                    } else {
+                        console.log(`    ❌ All click methods failed for tour operator option`);
+                        return false;
+                    }
                 }
                 
                 // Check if the tour operator name starts with the search term (word boundary)
@@ -1036,18 +1535,93 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                     cleanTextWithoutParens.startsWith(searchTermLower + '-') ||
                     cleanTextWithoutParens.startsWith(searchTermLower + '.')) {
                     console.log(`    ✅ Found word boundary match: "${text}" for search "${searchTerm}"`);
-                    await option.click();
-                    await page.waitForTimeout(1000);
-                    return true;
+                    
+                    // Try multiple click approaches for better reliability with malformed DOM support
+                    let clickSuccessful = false;
+                    
+                    // Try the same enhanced clicking methods as exact match
+                    for (let method = 1; method <= 5; method++) {
+                        try {
+                            switch (method) {
+                                case 1: // Standard click
+                                    await option.click();
+                                    break;
+                                case 2: // Result label click (for malformed DOM)
+                                    const resultLabel = option.locator('.select2-result-label').first();
+                                    const labelExists = await resultLabel.isVisible().catch(() => false);
+                                    if (labelExists) {
+                                        await resultLabel.click();
+                                    } else {
+                                        continue;
+                                    }
+                                    break;
+                                case 3: // Force click
+                                    await option.click({ force: true });
+                                    break;
+                                case 4: // JavaScript click
+                                    await option.evaluate(el => el.click());
+                                    break;
+                                case 5: // Text-based click
+                                    await page.click(`text="${text}"`, { timeout: 2000 });
+                                    break;
+                            }
+                            
+                            await page.waitForTimeout(800);
+                            clickSuccessful = true;
+                            console.log(`    ✅ Word boundary click successful (method ${method})`);
+                            break;
+                        } catch (e) {
+                            console.log(`    ⚠️ Word boundary click method ${method} failed: ${e.message}`);
+                        }
+                    }
+                    
+                    if (clickSuccessful) {
+                        await page.waitForTimeout(700);
+                        
+                        // Verify dropdown closed
+                        const dropdownClosed = await page.evaluate(() => {
+                            const results = document.querySelector('#select2-results-18');
+                            return !results || results.style.display === 'none' || !results.offsetParent;
+                        });
+                        
+                        if (!dropdownClosed) {
+                            await page.keyboard.press('Escape');
+                            await page.waitForTimeout(500);
+                        }
+                        
+                        return true;
+                    } else {
+                        console.log(`    ❌ All word boundary click methods failed`);
+                        return false;
+                    }
                 }
                 
                 // Check if the cleaned text contains the full tour operator name as a whole word
                 const wordBoundaryRegex = new RegExp(`\\b${cleanTourOperator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
                 if (wordBoundaryRegex.test(cleanTextWithoutParens)) {
                     console.log(`    ✅ Found word match: "${text}" for search "${searchTerm}"`);
-                    await option.click();
-                    await page.waitForTimeout(1000);
-                    return true;
+                    
+                    // Try multiple click approaches for better reliability
+                    try {
+                        await option.click();
+                        await page.waitForTimeout(1500);
+                        
+                        // Verify dropdown closed
+                        const dropdownClosed = await page.evaluate(() => {
+                            const results = document.querySelector('#select2-results-18');
+                            return !results || results.style.display === 'none' || !results.offsetParent;
+                        });
+                        
+                        if (!dropdownClosed) {
+                            await page.keyboard.press('Escape');
+                            await page.waitForTimeout(500);
+                        }
+                        
+                        return true;
+                    } catch (e) {
+                        console.log(`    ⚠️ Click failed: ${e.message}`);
+                        return false;
+                    }
                 }
             }
             
@@ -1145,6 +1719,9 @@ async function fillAndValidateRegion(page, regionName, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             console.log(`    🌍 Selecting region: ${regionName} (attempt ${attempt}/${maxRetries})`);
+            
+            // Close any interfering popups before region selection
+            await closeCalendarPopupIfOpen(page);
             
             // Find the dropdown using dynamic selector
             const dropdownSelector = await findDynamicSelector(page, 'destination_dropdown');
@@ -1458,6 +2035,9 @@ async function submitFormHumanLike(page, maxRetries = 3) {
         try {
             console.log(`    📤 Submitting form (attempt ${attempt}/${maxRetries})`);
             
+            // Close any interfering popups before form submission
+            await closeCalendarPopupIfOpen(page);
+            
             // Human-like pause before clicking submit
             await page.waitForTimeout(1000 + Math.random() * 1000);
             
@@ -1515,6 +2095,9 @@ async function submitFormHumanLike(page, maxRetries = 3) {
 async function verifyFormState(page, expectedFormState) {
     try {
         console.log('    🔍 Verifying form state before submission...');
+        
+        // Close any interfering popups before verification
+        await closeCalendarPopupIfOpen(page);
         
         // Check reservation title
         const titleSelector = await findDynamicSelector(page, 'reservation_title');
@@ -1610,48 +2193,70 @@ async function closeCalendarPopupIfOpen(page) {
         const isFreezerVisible = await freezerDiv.isVisible().catch(() => false);
         
         if (isFreezerVisible) {
-            console.log('    ⚠️  Calendar popup detected (freezer div active), closing...');
-            
-            // Try multiple methods to close the calendar popup
-            // Method 1: Press Escape key
-            await page.keyboard.press('Escape');
-            await page.waitForTimeout(500);
-            
-            // Check if freezer is still there
-            const stillFrozen = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
-            
-            if (stillFrozen) {
-                console.log('    🔄 Escape didn\'t work, trying to click outside...');
-                // Method 2: Click outside the popup area
-                await page.click('body', { position: { x: 50, y: 50 } });
-                await page.waitForTimeout(500);
-            }
-            
-            // Check again
-            const finalCheck = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
-            if (finalCheck) {
-                console.log('    🔄 Still frozen, trying to click close button...');
-                // Method 3: Try to find and click any close button
-                try {
-                    await page.click('[aria-label="Close"]', { timeout: 2000 });
-                } catch (e) {
-                    try {
-                        await page.click('.close', { timeout: 2000 });
-                    } catch (e2) {
-                        // Final attempt - multiple escape presses
-                        await page.keyboard.press('Escape');
-                        await page.keyboard.press('Escape');
-                        await page.waitForTimeout(1000);
+            // Check if this is actually a calendar popup by looking for calendar-specific elements
+            const isCalendarPopup = await page.evaluate(() => {
+                const freezer = document.querySelector('div.zc-freezer');
+                if (!freezer) return false;
+                
+                // Look for calendar-specific indicators
+                const calendarIndicators = [
+                    '.calendar',
+                    '.datepicker',
+                    '.date-picker',
+                    '[class*="calendar"]',
+                    '[class*="date"]',
+                    '.ui-datepicker'
+                ];
+                
+                for (const indicator of calendarIndicators) {
+                    if (document.querySelector(indicator)) {
+                        return true;
                     }
                 }
-            }
+                
+                // Also check if there are date input fields visible (suggesting calendar popup)
+                const dateInputs = document.querySelectorAll('input[type="date"], input[name*="Date"], input[id*="Date"]');
+                return dateInputs.length > 0;
+            });
             
-            // Wait for freezer to disappear
-            try {
-                await page.waitForSelector('div.zc-freezer', { state: 'hidden', timeout: 3000 });
-                console.log('    ✅ Calendar popup closed successfully');
-            } catch (e) {
-                console.log('    ⚠️  Calendar popup may still be active');
+            if (isCalendarPopup) {
+                console.log('    ⚠️  Calendar popup detected (freezer div active), closing...');
+                
+                // Try gentle method first - single escape key
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(500);
+                
+                // Check if freezer is still there
+                const stillFrozen = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
+                
+                if (stillFrozen) {
+                    console.log('    🔄 Escape didn\'t work, trying to click outside...');
+                    // Method 2: Click outside the popup area (conservative click)
+                    await page.click('body', { position: { x: 50, y: 50 } });
+                    await page.waitForTimeout(500);
+                }
+                
+                // Final check - only try close button if still frozen
+                const finalCheck = await page.locator('div.zc-freezer').first().isVisible().catch(() => false);
+                if (finalCheck) {
+                    console.log('    🔄 Still frozen, trying to click close button...');
+                    try {
+                        // Only look for close buttons within calendar popups
+                        await page.click('.zc-freezer [aria-label="Close"], .zc-freezer .close', { timeout: 2000 });
+                    } catch (e) {
+                        console.log('    ℹ️ No close button found, popup may be legitimate');
+                    }
+                }
+                
+                // Wait for freezer to disappear
+                try {
+                    await page.waitForSelector('div.zc-freezer', { state: 'hidden', timeout: 2000 });
+                    console.log('    ✅ Calendar popup closed successfully');
+                } catch (e) {
+                    console.log('    ℹ️ Popup still active - may be a legitimate modal');
+                }
+            } else {
+                console.log('    ℹ️ Freezer detected but not a calendar popup - leaving it open');
             }
             
         } else {
@@ -1659,7 +2264,7 @@ async function closeCalendarPopupIfOpen(page) {
         }
         
         // Add a small delay to ensure page is stable
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(300);
         return true;
         
     } catch (error) {
@@ -1833,4 +2438,4 @@ async function sendToWebhook(processedData) {
     }
 }
 
-module.exports = { loginAndProcess };
+module.exports = { loginAndProcess, sendToWebhook };
