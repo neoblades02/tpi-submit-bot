@@ -361,6 +361,60 @@ curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" ht
 curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3000/trigger-bot-async
 ```
 
+#### n8n Integration Example:
+Use these settings in your n8n HTTP Request node:
+- **Method**: POST
+- **URL**: `http://localhost:3000/trigger-bot-async`
+- **Authentication**: None
+- **Send Headers**: Enable
+- **Send Body**: Enable
+- **Body Content Type**: JSON
+- **Specify Body**: Using Fields Below
+- **Body Parameters**: 
+  - **Name**: `@sample.json`
+  - **Value**: `[{{ $json }}]` (Expression mode)
+
+**Note**: The bot expects a JSON array containing objects with `rows` property, so use `[{{ $json }}]` to wrap your data in an array.
+
+**Troubleshooting n8n "Bad request" error:**
+If you get "Request body must be a valid JSON array", try these alternatives:
+1. Use **Specify Body**: JSON (instead of Using Fields Below)
+2. In the JSON field, use: `[{{ $json }}]`
+3. Or use: `[{"rows": {{ $json.rows }}}]`
+4. Make sure your data structure has a `rows` property with an array of records
+
+**Expected n8n request format:**
+```json
+[
+  {
+    "rows": [
+      {
+        "Agent Name": "Alex Harmeyer",
+        "Client Name": "Donna Duquaine",
+        "Trip Description": "Donna Duquaine | Location TBD | Month TBD",
+        "Booking Number": "35090693",
+        "Booking Status": "Cancelled",
+        "Booking Description": "Palacio de los Duques Madrid",
+        "Tour Operator": "Rate Hawk",
+        "Booking Date": "06/02/2025",
+        "Booking Start Date": "09/01/2025",
+        "Booking End Date": "09/12/2025",
+        "Package Price": "1,776.00",
+        "Commission Projected": "177.56"
+      }
+    ]
+  }
+]
+```
+
+**Alternative curl command:**
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '[{"rows":[{"Agent Name":"Alex Harmeyer","Client Name":"Donna Duquaine","Trip Description":"Donna Duquaine | Location TBD | Month TBD","Booking Number":"35090693","Booking Status":"Cancelled","Booking Description":"Palacio de los Duques Madrid","Tour Operator":"Rate Hawk","Booking Date":"06/02/2025","Booking Start Date":"09/01/2025","Booking End Date":"09/12/2025","Package Price":"1,776.00","Commission Projected":"177.56"}]}]' \
+  http://localhost:3000/trigger-bot-async
+```
+
 ### New API Endpoints
 
 #### Job Management

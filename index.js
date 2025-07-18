@@ -75,10 +75,17 @@ app.post('/trigger-bot', async (req, res) => {
 app.post('/trigger-bot-async', async (req, res) => {
     const receivedData = req.body;
 
+    // Debug logging
+    console.log('Received data type:', typeof receivedData);
+    console.log('Is array:', Array.isArray(receivedData));
+    console.log('Received data:', JSON.stringify(receivedData, null, 2));
+
     if (!receivedData || !Array.isArray(receivedData)) {
         return res.status(400).json({
             error: 'Request body must be a valid JSON array.',
-            code: 'INVALID_DATA'
+            code: 'INVALID_DATA',
+            received: typeof receivedData,
+            isArray: Array.isArray(receivedData)
         });
     }
 
