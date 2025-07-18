@@ -169,7 +169,7 @@ curl http://localhost:3000/jobs
 
 ## Usage Examples
 
-### Processing Large Dataset (1,407 records)
+### Processing Large Dataset
 ```bash
 # 1. Submit the job
 RESPONSE=$(curl -s -X POST \
@@ -221,7 +221,7 @@ curl -X POST \
 ### Consolidated Webhook Delivery
 - **Single Webhook**: All results sent in one consolidated webhook when job completes
 - **No Batch Webhooks**: Individual batches do not trigger separate webhooks
-- **Complete Results**: Webhook contains all 1,407 processed records with statuses and invoice numbers
+- **Complete Results**: Webhook contains all processed records with statuses and invoice numbers
 - **Webhook URL**: `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
 
 ### Webhook Timing
@@ -231,10 +231,11 @@ curl -X POST \
 
 ## Performance Expectations
 Based on current performance (150 records in 1 hour):
-- **1,407 records**: ~9.4 hours estimated
-- **Batch size 10**: ~141 batches, progress updates every ~4 minutes
-- **Batch size 15**: ~94 batches, progress updates every ~6 minutes
-- **Webhook delivery**: Single webhook at completion (~9.4 hours)
+- **Processing speed**: ~24 seconds per record
+- **Batch size 10**: Progress updates every ~4 minutes
+- **Batch size 15**: Progress updates every ~6 minutes
+- **Large datasets**: Processing time scales linearly with record count
+- **Webhook delivery**: Single webhook at completion
 
 ## Best Practices
 1. **Use appropriate batch sizes**: 10-15 records per batch for good progress granularity

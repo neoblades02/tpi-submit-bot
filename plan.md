@@ -11,7 +11,7 @@ This document outlines the development plan for the TPI Suitcase automation bot 
 - **`Dockerfile`**: Production-ready container configuration
 - **`docker-compose.yml`**: Local development and testing environment
 - **`.dockerignore`**: Docker build optimization
-- **`sample.json`**: Example payload format for testing (1,407 records)
+- **`sample.json`**: Example payload format for testing
 - **`README.md`**: Complete setup and usage documentation
 - **`DEPLOYMENT.md`**: Production deployment guide
 - **`ASYNC_USAGE.md`**: Asynchronous processing usage guide
@@ -405,7 +405,7 @@ Each processed record returns with enhanced status information:
 - ✅ **Timeout Prevention**: Perfect solution for Coolify and cloud platform timeouts
 
 ### Large Dataset Optimization (Previous Update)
-- ✅ **1,407 Record Support**: Optimized for large datasets like your sample.json
+- ✅ **High-Volume Support**: Optimized for large datasets with hundreds to thousands of records
 - ✅ **Memory Management**: Batch processing prevents memory overflow
 - ✅ **Error Isolation**: Individual record failures don't stop entire job
 - ✅ **Background Processing**: Jobs run completely independent of HTTP requests

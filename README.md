@@ -118,7 +118,7 @@ For large datasets (100+ records) or to avoid platform timeouts, use the asynchr
 
 **Endpoint:** `POST /trigger-bot-async`
 
-*Recommended for Coolify deployment and datasets like your 1,407 records*
+*Recommended for Coolify deployment and large datasets*
 
 **Payload Format:**
 The body must be a JSON array containing a single object with a `rows` key. The `rows` key must hold an array of client records with complete booking information.
@@ -237,10 +237,10 @@ Returns immediately with job tracking information:
 **Then monitor progress:**
 ```bash
 # Check progress
-curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/progress
+curl http://localhost:3000/job/{JOB_ID}/progress
 
 # Get results when completed
-curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/results
+curl http://localhost:3000/job/{JOB_ID}/results
 ```
 
 ### Status Values
@@ -420,7 +420,7 @@ tpi-submit-bot/
 ├── Dockerfile          # Container configuration for deployment
 ├── docker-compose.yml  # Docker Compose for local testing
 ├── .dockerignore       # Docker build optimization
-├── sample.json         # Example payload for testing (1,407 records)
+├── sample.json         # Example payload for testing
 ├── plan.md             # Complete project documentation and status
 ├── README.md           # This file
 ├── DEPLOYMENT.md       # Production deployment guide
@@ -478,11 +478,11 @@ Enable detailed logging by running with `headless: false` during development to 
 
 ## Key Features for Large Datasets
 
-### Perfect for Your 1,407 Records
+### Perfect for High-Volume Processing
 - **Asynchronous Processing**: No timeout issues on Coolify or other cloud platforms
-- **Batch Processing**: Processes 10 records at a time with progress updates
-- **Estimated Time**: ~9.4 hours for 1,407 records (based on 150 records/hour performance)
-- **Real-time Monitoring**: Track progress every ~4 minutes per batch
+- **Batch Processing**: Processes records in configurable batches (default: 10 records)
+- **Scalable Performance**: Handles hundreds to thousands of records efficiently
+- **Real-time Monitoring**: Track progress with estimated completion times
 - **Error Resilience**: Individual failures don't stop the entire job
 - **Background Operation**: Submit job and check progress anytime
 
