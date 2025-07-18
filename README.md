@@ -295,13 +295,30 @@ The bot automatically sends ALL processed records to the configured webhook endp
 **Content-Type**: application/json  
 **Payload**: Complete array of processed records with status and invoice information
 
+### Real-Time Status Updates
+
+The bot also sends comprehensive status updates throughout job processing:
+
+**Status Webhook URL**: `https://n8n.collectgreatstories.com/webhook/tpi-status`
+
+**Status Updates Include**:
+- Job started with record count and batch configuration
+- Login progress and completion
+- Batch completion with progress percentages
+- Browser crash detection and recovery attempts
+- Job completion with final statistics
+- Webhook delivery confirmation
+- Error notifications with detailed context
+
 ### Webhook Features
 
 - **Automatic Delivery**: Sends data after all records are processed
+- **Real-Time Status**: Continuous status updates throughout job lifecycle
 - **Complete Data**: Includes all original fields plus status and invoice numbers
 - **Error Handling**: Comprehensive logging of webhook delivery status
 - **Timeout Protection**: 10-second timeout for webhook requests
 - **Retry Logic**: Built-in error handling with detailed response logging
+- **Crash Recovery Monitoring**: Real-time notifications when browser crashes are detected and recovered
 
 ---
 
@@ -544,6 +561,7 @@ Enable detailed logging by running with `headless: false` during development to 
 - **Asynchronous Processing**: No timeout issues on Coolify or other cloud platforms
 - **Single Login**: Login once per job (not per batch) for maximum efficiency
 - **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
+- **Real-Time Status Webhooks**: Comprehensive status updates sent to `https://n8n.collectgreatstories.com/webhook/tpi-status`
 - **Batch Processing**: Processes records in configurable batches (default: 10 records)
 - **Scalable Performance**: Handles hundreds to thousands of records efficiently
 - **Real-time Monitoring**: Track progress with estimated completion times
@@ -559,4 +577,4 @@ Enable detailed logging by running with `headless: false` during development to 
 
 ---
 
-**The TPI Suitcase Submission Bot provides complete end-to-end automation with both synchronous and asynchronous processing capabilities, comprehensive error handling, real-time progress tracking, and automatic webhook integration for seamless workflow integration.**
+**The TPI Suitcase Submission Bot provides complete end-to-end automation with both synchronous and asynchronous processing capabilities, comprehensive error handling, real-time progress tracking, automatic crash recovery, and dual webhook integration (data delivery + status updates) for seamless workflow integration.**

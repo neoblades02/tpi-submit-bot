@@ -392,7 +392,29 @@ Each processed record returns with enhanced status information:
 
 ## Latest Updates
 
-### Tour FIT Consistency (Latest Update)
+### Single Login Architecture & Crash Recovery (Latest Update)
+- ✅ **Single Login Per Job**: Reduced login frequency from 141 logins (one per batch) to 1 login per entire job for maximum efficiency
+- ✅ **Session Reuse**: Browser session is created once and reused across all batches within a job
+- ✅ **Automatic Browser Crash Recovery**: Detects browser crashes and automatically recreates sessions to continue processing
+- ✅ **Session Recreation**: When crashes occur, closes the crashed browser and creates a new login session seamlessly
+- ✅ **Batch-Level Recovery**: Automatically retries failed batches with new sessions without losing progress
+- ✅ **Performance Optimization**: Dramatically reduces processing time and resource usage
+
+### Real-Time Status Webhook Integration (Latest Update)
+- ✅ **Comprehensive Status Updates**: Webhook integration to `https://n8n.collectgreatstories.com/webhook/tpi-status`
+- ✅ **Job Lifecycle Tracking**: Status updates for job start, login, batch completion, completion, and failures
+- ✅ **Crash Recovery Monitoring**: Real-time notifications when crashes are detected and recovery is initiated
+- ✅ **Progress Notifications**: Detailed progress updates including batch completion and estimated duration
+- ✅ **Error Reporting**: Immediate notification of job failures with error details
+- ✅ **Webhook Delivery Confirmation**: Status updates confirming successful webhook delivery to n8n
+
+### Tour Operator Search Enhancement (Recent Update)
+- ✅ **Priority-Based Matching**: Implemented progressive word matching system for better tour operator selection
+- ✅ **Exact Match Priority**: Prioritizes exact matches over partial matches to prevent false positives
+- ✅ **All Words Matching**: Ensures all words in tour operator name are matched for accurate selection
+- ✅ **Word Boundary Detection**: Prevents "Tours 4 The World" from matching when searching for "Tours by Locals"
+
+### Tour FIT Consistency (Previous Update)
 - ✅ **Reservation Type Standardization**: All bookings now consistently use "Tour FIT" instead of dynamic detection
 - ✅ **Simplified Logic**: Removed cruise detection logic for consistent processing
 - ✅ **Code Cleanup**: Streamlined reservation title setting for better reliability
@@ -410,4 +432,4 @@ Each processed record returns with enhanced status information:
 - ✅ **Error Isolation**: Individual record failures don't stop entire job
 - ✅ **Background Processing**: Jobs run completely independent of HTTP requests
 
-**Production Ready:** Bot is now freeze-resistant, timeout-proof, and ready for deployment to production environments (Coolify, Google Cloud Run, etc.).
+**Production Ready:** Bot is now freeze-resistant, timeout-proof, crash-resilient, and ready for deployment to production environments (Coolify, Google Cloud Run, etc.) with comprehensive real-time monitoring.
