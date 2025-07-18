@@ -94,6 +94,8 @@ app.post('/trigger-bot-async', async (req, res) => {
             records: receivedData[0]?.rows?.length || 0,
             timestamp: new Date().toISOString()
         });
+        console.log('First item structure:', receivedData[0]);
+        console.log('First item rows:', receivedData[0]?.rows);
 
         // Extract options from query parameters
         const options = {

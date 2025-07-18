@@ -372,16 +372,24 @@ Use these settings in your n8n HTTP Request node:
 - **Specify Body**: Using Fields Below
 - **Body Parameters**: 
   - **Name**: `@sample.json`
-  - **Value**: `[{{ $json }}]` (Expression mode)
+  - **Value**: `[{"rows": {{ $json.rows }}}]` (Expression mode)
 
-**Note**: The bot expects a JSON array containing objects with `rows` property, so use `[{{ $json }}]` to wrap your data in an array.
+**Note**: The bot expects a JSON array containing objects with `rows` property.
 
-**Troubleshooting n8n "Bad request" error:**
-If you get "Request body must be a valid JSON array", try these alternatives:
-1. Use **Specify Body**: JSON (instead of Using Fields Below)
-2. In the JSON field, use: `[{{ $json }}]`
-3. Or use: `[{"rows": {{ $json.rows }}}]`
-4. Make sure your data structure has a `rows` property with an array of records
+**Correct n8n Configuration:**
+1. **Method**: POST
+2. **URL**: `http://localhost:3000/trigger-bot-async`
+3. **Body Content Type**: JSON
+4. **Specify Body**: Using Fields Below
+5. **Body Parameters**: 
+   - **Name**: `@sample.json`
+   - **Value**: `[{"rows": {{ $json.rows }}}]` (Expression mode)
+
+**Alternative for JSON body field:**
+If using "Specify Body: JSON", use:
+```json
+[{"rows": {{ $json.rows }}}]
+```
 
 **Expected n8n request format:**
 ```json
