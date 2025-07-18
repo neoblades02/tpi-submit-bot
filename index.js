@@ -97,6 +97,18 @@ app.post('/trigger-bot-async', async (req, res) => {
         console.log('First item structure:', receivedData[0]);
         console.log('First item rows:', receivedData[0]?.rows);
 
+        // Transform data if needed - handle both formats
+        let transformedData = receivedData;
+        
+        // If receivedData is an array of objects (records), wrap it in the expected format
+        if (Array.isArray(receivedData) && receivedData.length > 0 && receivedData[0]['Agent Name']) {
+            console.log('Detected raw records array, wrapping in expected format');
+            transformedData = [{ rows: receivedData }];
+        }
+
+        console.log('Transformed data structure:', transformedData[0]);
+        console.log('Record count:', transformedData[0]?.rows?.length || 0);
+
         // Extract options from query parameters
         const options = {
             batchSize: parseInt(req.query.batchSize) || 10,
@@ -105,7 +117,7 @@ app.post('/trigger-bot-async', async (req, res) => {
         };
 
         // Create async job
-        const jobResult = jobManager.createJob(receivedData, options);
+        const jobResult = jobManager.createJob(transformedData, options);
 
         res.status(202).json({
             message: 'Job created successfully. Use the job ID to check progress.',

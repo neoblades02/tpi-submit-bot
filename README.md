@@ -372,7 +372,7 @@ Use these settings in your n8n HTTP Request node:
 - **Specify Body**: Using Fields Below
 - **Body Parameters**: 
   - **Name**: `@sample.json`
-  - **Value**: `[{"rows": {{ $json.rows }}}]` (Expression mode)
+  - **Value**: `{{ $json.rows }}` (Expression mode)
 
 **Note**: The bot expects a JSON array containing objects with `rows` property.
 
