@@ -542,6 +542,8 @@ Enable detailed logging by running with `headless: false` during development to 
 
 ### Perfect for High-Volume Processing
 - **Asynchronous Processing**: No timeout issues on Coolify or other cloud platforms
+- **Single Login**: Login once per job (not per batch) for maximum efficiency
+- **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
 - **Batch Processing**: Processes records in configurable batches (default: 10 records)
 - **Scalable Performance**: Handles hundreds to thousands of records efficiently
 - **Real-time Monitoring**: Track progress with estimated completion times

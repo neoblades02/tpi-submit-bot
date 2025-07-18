@@ -5,6 +5,8 @@ The TPI Submit Bot now supports asynchronous processing to handle large datasets
 
 ## Key Features
 - **Asynchronous Processing**: Submit jobs that run in the background
+- **Single Login**: Login once per job for maximum efficiency
+- **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
 - **Batch Processing**: Data is processed in configurable batches (default: 10 records)
 - **Progress Tracking**: Real-time progress updates with estimated completion time
 - **Job Management**: Cancel, monitor, and retrieve results for multiple jobs

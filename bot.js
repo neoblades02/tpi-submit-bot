@@ -2416,4 +2416,493 @@ async function sendToWebhook(processedData) {
     }
 }
 
-module.exports = { loginAndProcess, sendToWebhook };
+// New function to login once and create reusable session
+async function loginAndCreateSession() {
+    console.log('🔑 Creating browser session with single login...');
+    const browser = await chromium.launch({ 
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu'
+        ]
+    });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    console.log('Navigating to login page...');
+    
+    // Retry logic for initial page load
+    let pageLoaded = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            console.log(`Page load attempt ${attempt}/3...`);
+            await page.goto('https://my.tpisuitcase.com/', { 
+                timeout: 60000,
+                waitUntil: 'networkidle' 
+            });
+            pageLoaded = true;
+            console.log('✅ Page loaded successfully');
+            break;
+        } catch (error) {
+            console.log(`⚠️ Page load attempt ${attempt} failed: ${error.message}`);
+            if (attempt === 3) {
+                throw new Error(`Failed to load page after 3 attempts: ${error.message}`);
+            }
+            await page.waitForTimeout(2000); // Wait before retry
+        }
+    }
+    
+    if (!pageLoaded) {
+        throw new Error('Could not load TPI Suitcase login page');
+    }
+
+    console.log('Waiting for iframe...');
+    // Wait for the iframe to be present and visible
+    const iframeElement = await page.waitForSelector('iframe#signinFrame', { timeout: 60000 });
+    const frame = await iframeElement.contentFrame();
+
+    if (!frame) {
+        throw new Error('Could not find the sign-in iframe.');
+    }
+
+    console.log('Filling in username...');
+    // Wait for the email field inside the iframe
+    const emailInput = await frame.waitForSelector('#login_id', { timeout: 60000 });
+    await emailInput.fill(process.env.USERNAME);
+
+    console.log('Clicking next...');
+    const nextButton = await frame.waitForSelector('#nextbtn', { timeout: 60000 });
+    await nextButton.click();
+
+    console.log('Filling in password...');
+    // Wait for the password field to appear
+    const passwordInput = await frame.waitForSelector('#password', { timeout: 60000 });
+    await passwordInput.fill(process.env.PASSWORD);
+
+    console.log('Clicking sign in...');
+    const signInButton = await frame.waitForSelector('#nextbtn:has-text("Sign In")', { timeout: 60000 });
+    await signInButton.click();
+
+    // Check for "I Understand" button immediately after sign in but before page load
+    console.log('Checking for "I Understand" button after sign in...');
+    try {
+        const iUnderstandButton = await page.waitForSelector('#continue_button', { timeout: 5000 });
+        if (iUnderstandButton) {
+            console.log('Found "I Understand" button, clicking it...');
+            await iUnderstandButton.click();
+            await page.waitForTimeout(3000);
+            console.log('Clicked "I Understand" button successfully');
+        }
+    } catch (e) {
+        console.log('No "I Understand" button found, continuing...');
+    }
+
+    console.log('Waiting for page to load after login...');
+    await page.waitForURL('https://my.tpisuitcase.com/#Page:CORE', { timeout: 60000 });
+
+    console.log('Page loaded successfully. Waiting for 10 seconds...');
+    await page.waitForTimeout(10000);
+
+    console.log('✅ Login completed! Session ready for processing');
+
+    // Return session object with browser, context, and page
+    return {
+        browser: browser,
+        context: context,
+        page: page
+    };
+}
+
+// New function to process records using existing session
+async function processRecordsWithSession(session, data, options = {}) {
+    const { page } = session;
+    const processedData = [];
+
+    try {
+        console.log('📋 Navigating to Quick Submit form...');
+        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+
+        // Wait for a known element on the form page to ensure it's loaded
+        const titleSelector = await findDynamicSelector(page, 'reservation_title');
+        if (titleSelector) {
+            await page.waitForSelector(titleSelector, { timeout: 60000 });
+        } else {
+            // Fallback to original selector if dynamic detection fails
+            await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+        }
+
+        for (const record of data[0].rows) {
+            let processingAttempt = 1;
+            const maxProcessingAttempts = 3;
+            let recordProcessed = false;
+            
+            // Store form state for retry attempts
+            let formState = {
+                reservationTitle: '',
+                bookingNumber: '',
+                startDate: '',
+                endDate: '',
+                packagePrice: '',
+                expectedCommission: '',
+                tourOperator: '',
+                region: 'United States'
+            };
+            
+            while (!recordProcessed && processingAttempt <= maxProcessingAttempts) {
+                try {
+                    if (processingAttempt > 1) {
+                        console.log(`Processing record for: ${record['Client Name']} (attempt ${processingAttempt}/${maxProcessingAttempts})`);
+                    } else {
+                        console.log(`Processing record for: ${record['Client Name']}`);
+                    }
+
+                    // Ensure page is ready before processing this record
+                    const pageReady = await ensurePageReady(page);
+                    if (!pageReady) {
+                        console.log(`  - Page not ready, skipping record: ${record['Client Name']}`);
+                        record.status = 'error';
+                        record.Submitted = 'Error - Page Not Ready';
+                        record.InvoiceNumber = 'Not Generated';
+                        recordProcessed = true;
+                        break;
+                    }
+
+                    // 1. Determine Reservation Title
+                    if (processingAttempt === 1) {
+                        formState.reservationTitle = 'Tour FIT';
+                        formState.bookingNumber = record['Booking Number'];
+                        formState.tourOperator = record['Tour Operator'];
+                        formState.startDate = formatDate(record['Booking Start Date']);
+                        formState.endDate = formatDate(record['Booking End Date']);
+                        formState.packagePrice = record['Package Price'].replace(/,/g, '');
+                        formState.expectedCommission = record['Commission Projected'].replace(/,/g, '');
+                    }
+                    
+                    const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                    if (!titleSelector) {
+                        throw new Error('Could not find reservation title field');
+                    }
+                    await page.fill(titleSelector, formState.reservationTitle);
+                    console.log(`  - Set Reservation Title to: ${formState.reservationTitle}`);
+
+                    // 2. Fill Booking Number
+                    const numberSelector = await findDynamicSelector(page, 'reservation_number');
+                    if (!numberSelector) {
+                        throw new Error('Could not find reservation number field');
+                    }
+                    await page.fill(numberSelector, formState.bookingNumber);
+                    console.log(`  - Set Booking Number to: ${formState.bookingNumber}`);
+
+                    // 3. Clear Secondary Customers field to prevent confusion
+                    await clearSecondaryCustomersField(page);
+
+                    // 4. Search for Client Name using the search popup
+                    const clientName = record['Client Name'];
+                    const [firstName, ...lastNameParts] = clientName.split(' ');
+                    const lastName = lastNameParts.join(' ');
+
+                    console.log(`  - Searching for client: ${firstName} ${lastName}`);
+
+                    // Click the search icon next to the client field
+                    await page.click('i.ui-3-search');
+
+                    // Wait for the search popup and enter the last name
+                    const searchInput = await page.waitForSelector('input[name="zc_search_Last_Name"]', { timeout: 10000 });
+                    await searchInput.fill(lastName);
+                    await page.click('input#searchBtn');
+
+                    // Add a static wait for the search results to load
+                    await page.waitForTimeout(5000);
+
+                    // Check if no results message is displayed
+                    const noDataElement = await page.locator('#zc-advanced-search-table-nodata').first();
+                    const isNoDataVisible = await noDataElement.isVisible().catch(() => false);
+
+                    let clientFound = false;
+
+                    if (isNoDataVisible) {
+                        console.log(`  - Client not found: ${clientName} (No search results)`);
+                        // Click close button to close the popup - try multiple selectors
+                        try {
+                            await page.waitForSelector('span.popupClose[aria-label="Close"]', { timeout: 5000 });
+                            await page.click('span.popupClose[aria-label="Close"]');
+                        } catch (e) {
+                            console.log('  - Trying alternative close button selector...');
+                            try {
+                                await page.click('span.popupClose');
+                            } catch (e2) {
+                                console.log('  - Trying escape key...');
+                                await page.keyboard.press('Escape');
+                            }
+                        }
+                        
+                        // Wait for popup to close
+                        await page.waitForTimeout(2000);
+                        
+                        // Try to create new client
+                        console.log(`  - Attempting to create new client: ${firstName} ${lastName}`);
+                        const clientCreated = await createNewClient(page, firstName, lastName);
+                        
+                        if (clientCreated) {
+                            console.log(`  - New client created successfully, restarting form processing...`);
+                            
+                            // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+                            console.log(`  - F5 refreshing entire page to restart processing with new client...`);
+                            await page.reload({ waitUntil: 'networkidle' });
+                            await page.waitForTimeout(3000);
+                            
+                            // Navigate back to Quick Submit form after F5 refresh
+                            console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
+                            await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                            
+                            // Wait for the form to load
+                            const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                            if (titleSelector) {
+                                await page.waitForSelector(titleSelector, { timeout: 60000 });
+                            } else {
+                                await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                            }
+                            
+                            console.log(`  - Form refreshed, restarting entire record processing from beginning...`);
+                            
+                            // Reset processingAttempt to restart from the beginning
+                            processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                            continue;
+                        } else {
+                            console.log(`  - Failed to create new client: ${clientName}`);
+                            record.status = 'not submitted';
+                            record.Submitted = 'Not Submitted - Client Creation Failed';
+                            record.InvoiceNumber = 'Not Generated';
+                        }
+                    } else {
+                        // Check if results were returned
+                        const rows = await page.locator('.ht_master .htCore tbody tr').all();
+
+                        if (rows.length > 0) {
+                            // Find the correct row and click it
+                            for (const row of rows) {
+                                const rowFirstName = await row.locator('td:nth-child(2)').innerText();
+                                const rowLastName = await row.locator('td:nth-child(4)').innerText();
+
+                                if (rowFirstName.trim().toLowerCase() === firstName.toLowerCase() && rowLastName.trim().toLowerCase() === lastName.toLowerCase()) {
+                                    // Click the first cell (checkbox column) to select the row
+                                    await row.locator('td:first-child').click();
+                                    clientFound = true;
+                                    console.log(`  - Found and selected client: ${clientName}`);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (clientFound) {
+                            // Click the 'Done' button to confirm client selection
+                            await page.click('#zc-adv-btn-finish');
+                            await page.waitForTimeout(2000);
+
+                            // Validate critical fields after client search (basic check only)
+                            const validationResult = await validateCriticalFieldsAfterClientSearch(page);
+                            if (!validationResult) {
+                                console.log('  ❌ Critical field validation failed, skipping record');
+                                record.status = 'error';
+                                record.Submitted = 'Error';
+                                record.InvoiceNumber = 'Error';
+                            } else {
+
+                            // Close any remaining popups before tour operator selection
+                            await closeCalendarPopupIfOpen(page);
+
+                            // 4. Select Tour Operator
+                            console.log(`  - Selecting tour operator: ${formState.tourOperator}`);
+                            
+                            // Use a more flexible selector that works with dynamic IDs
+                            const tourOperatorFound = await searchAndSelectTourOperator(page, formState.tourOperator);
+                            
+                            if (!tourOperatorFound) {
+                                console.log(`  - Tour operator not found: ${formState.tourOperator}`);
+                                record.status = 'not submitted';
+                                record.Submitted = 'Not Submitted';
+                                record.InvoiceNumber = 'Not Generated';
+                            } else {
+                                console.log(`  - Selected tour operator: ${formState.tourOperator}`);
+
+                                // 5. Select Region (United States) with validation
+                                console.log(`  - Selecting region: ${formState.region}`);
+                                await fillAndValidateRegion(page, formState.region);
+
+                                // 6. Fill Start Date with validation
+                                console.log(`  - Setting start date: ${formState.startDate}`);
+                                await fillAndValidateField(page, 'start_date', formState.startDate, 'Start Date');
+
+                                // 7. Fill End Date with validation
+                                console.log(`  - Setting end date: ${formState.endDate}`);
+                                await fillAndValidateField(page, 'end_date', formState.endDate, 'End Date');
+
+                                // 8. Fill Package Price with validation
+                                try {
+                                    console.log(`  - Setting package price: ${formState.packagePrice}`);
+                                    await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
+                                } catch (e) {
+                                    console.log(`  ⚠️  Warning: Package Price filling failed: ${e.message}`);
+                                }
+
+                                // 9. Fill Expected Commission with validation
+                                try {
+                                    console.log(`  - Setting expected commission: ${formState.expectedCommission}`);
+                                    await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
+                                } catch (e) {
+                                    console.log(`  ⚠️  Warning: Expected Commission filling failed: ${e.message}`);
+                                }
+
+                                // 10. Verify all form fields are populated before submission
+                                const formValid = await verifyFormState(page, formState);
+                                if (!formValid) {
+                                    console.log('  ⚠️  Form validation failed, fields may be incomplete');
+                                    // Don't submit if form is invalid, continue to next attempt
+                                    throw new Error('Form validation failed');
+                                }
+                                
+                                // 11. Submit the form with human-like interaction
+                                console.log('  - Submitting form...');
+                                await submitFormHumanLike(page);
+
+                                // Extract invoice number from reservation title
+                                try {
+                                    const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                                    if (titleSelector) {
+                                        const reservationTitleValue = await page.inputValue(titleSelector);
+                                        console.log(`  - Reservation title after submit: ${reservationTitleValue}`);
+                                        
+                                        // Extract invoice number using regex (e.g., "Tour FIT - Invoice # 201425570 - Copy")
+                                        const invoiceMatch = reservationTitleValue.match(/Invoice\s*#\s*(\d+)/i);
+                                        const invoiceNumber = invoiceMatch ? invoiceMatch[1] : null;
+                                        
+                                        if (invoiceNumber) {
+                                            record.InvoiceNumber = invoiceNumber;
+                                            console.log(`  - Extracted invoice number: ${invoiceNumber}`);
+                                        } else {
+                                            record.InvoiceNumber = 'Not Generated';
+                                            console.log('  - No invoice number found in reservation title.');
+                                        }
+                                    } else {
+                                        record.InvoiceNumber = 'Not Generated';
+                                        console.log('  - Could not find reservation title field to extract invoice number.');
+                                    }
+                                } catch (e) {
+                                    console.error('  - Error extracting invoice number:', e);
+                                    record.InvoiceNumber = 'Error';
+                                }
+
+                                record.status = 'submitted';
+                                record.Submitted = 'Submitted';
+                            }
+                            }
+                        } else {
+                            console.log(`  - Client not found: ${clientName} (No matching client in results)`);
+                            record.status = 'not submitted';
+                            record.Submitted = 'Not Submitted - Client Not Found';
+                            record.InvoiceNumber = 'Not Generated';
+                        }
+                    }
+
+                    // Refresh form page after successful submission to ensure clean state for next record
+                    console.log('  🔄 Refreshing form page to start fresh...');
+                    await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                    
+                    // Wait for the form to load using dynamic selector detection
+                    let formReady = false;
+                    try {
+                        const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                        if (titleSelector) {
+                            await page.waitForSelector(titleSelector, { timeout: 60000 });
+                            formReady = true;
+                        }
+                    } catch (e) {
+                        console.log('  ⚠️  Dynamic selector detection failed, using fallback');
+                    }
+                    
+                    if (!formReady) {
+                        // Fallback to original selector if dynamic detection fails
+                        await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                    }
+                    
+                    console.log('  ✅ Form page refreshed and ready for next operation');
+
+                    // If we reach here, record was processed successfully
+                    recordProcessed = true;
+
+                } catch (e) {
+                    console.error(`Error processing record for ${record['Client Name']}:`, e);
+                    
+                    // Check if this is a browser crash or timeout
+                    if (isBrowserCrashed(e)) {
+                        console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
+                        
+                        // Attempt to recover from browser crash
+                        const recoverySuccess = await recoverFromBrowserIssue(page, record, 'crash', processingAttempt);
+                        
+                        if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
+                            console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
+                            processingAttempt++;
+                            continue; // Retry the record
+                        } else {
+                            console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
+                            record.status = 'error';
+                            record.Submitted = 'Error - Browser Crash';
+                            record.InvoiceNumber = 'Error';
+                            recordProcessed = true;
+                        }
+                    } else if (isBrowserTimeout(e)) {
+                        console.log(`  ⏰ Browser timeout detected for ${record['Client Name']}`);
+                        
+                        // Attempt to recover from browser timeout
+                        const recoverySuccess = await recoverFromBrowserIssue(page, record, 'timeout', processingAttempt);
+                        
+                        if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
+                            console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
+                            processingAttempt++;
+                            continue; // Retry the record
+                        } else {
+                            console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
+                            record.status = 'error';
+                            record.Submitted = 'Error - Browser Timeout';
+                            record.InvoiceNumber = 'Error';
+                            recordProcessed = true;
+                        }
+                    } else {
+                        // Non-crash/timeout error, mark as error and move on
+                        record.status = 'error';
+                        record.Submitted = 'Error';
+                        record.InvoiceNumber = 'Error';
+                        recordProcessed = true;
+                    }
+                }
+                
+                // Increment attempt counter for non-crash errors
+                if (!recordProcessed) {
+                    processingAttempt++;
+                }
+            }
+            
+            processedData.push(record);
+        }
+
+        // Send processed data to webhook (only if not disabled)
+        if (options.sendWebhook !== false) {
+            await sendToWebhook(processedData);
+        }
+
+        return processedData;
+
+    } catch (error) {
+        console.error('An error occurred during record processing:', error);
+        throw error;
+    }
+}
+
+module.exports = { loginAndProcess, loginAndCreateSession, processRecordsWithSession, sendToWebhook };
