@@ -23,7 +23,31 @@ async function loginAndProcess(data, options = {}) {
         const page = await context.newPage();
 
         console.log('Navigating to login page...');
-        await page.goto('https://my.tpisuitcase.com/');
+        
+        // Retry logic for initial page load
+        let pageLoaded = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                console.log(`Page load attempt ${attempt}/3...`);
+                await page.goto('https://my.tpisuitcase.com/', { 
+                    timeout: 60000,
+                    waitUntil: 'networkidle' 
+                });
+                pageLoaded = true;
+                console.log('✅ Page loaded successfully');
+                break;
+            } catch (error) {
+                console.log(`⚠️ Page load attempt ${attempt} failed: ${error.message}`);
+                if (attempt === 3) {
+                    throw new Error(`Failed to load page after 3 attempts: ${error.message}`);
+                }
+                await page.waitForTimeout(2000); // Wait before retry
+            }
+        }
+        
+        if (!pageLoaded) {
+            throw new Error('Could not load TPI Suitcase login page');
+        }
 
         console.log('Waiting for iframe...');
         // Wait for the iframe to be present and visible
@@ -1407,6 +1431,9 @@ async function searchAndSelectTourOperator(page, tourOperator) {
             // Debug: Log all found options
             console.log(`    🔍 Checking ${options.length} options for matches...`);
             
+            // Collect all matches with their priority scores
+            const matches = [];
+            
             for (const option of options) {
                 const text = await option.innerText();
                 const cleanText = text.toLowerCase().trim();
@@ -1422,110 +1449,20 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 // Check for exact match first (highest priority)
                 if (cleanText === cleanTourOperator || cleanTextWithoutParens === cleanTourOperator) {
                     console.log(`    ✅ Found exact match: "${text}" for search "${searchTerm}"`);
-                    
-                    // Try multiple click approaches for better reliability, especially for malformed DOM
-                    let clickSuccessful = false;
-                    
-                    // Method 1: Standard click
-                    try {
-                        await option.click();
-                        await page.waitForTimeout(800); // Wait to see if click registered
-                        clickSuccessful = true;
-                        console.log(`    ✅ Standard click successful`);
-                    } catch (e) {
-                        console.log(`    ⚠️ Standard click failed: ${e.message}`);
-                    }
-                    
-                    // Method 2: Try clicking on the result label (for malformed DOM)
-                    if (!clickSuccessful) {
-                        try {
-                            const resultLabel = option.locator('.select2-result-label').first();
-                            const labelExists = await resultLabel.isVisible().catch(() => false);
-                            if (labelExists) {
-                                await resultLabel.click();
-                                await page.waitForTimeout(800);
-                                clickSuccessful = true;
-                                console.log(`    ✅ Result label click successful`);
-                            }
-                        } catch (e) {
-                            console.log(`    ⚠️ Result label click failed: ${e.message}`);
-                        }
-                    }
-                    
-                    // Method 3: Force click if standard failed
-                    if (!clickSuccessful) {
-                        try {
-                            // Check if element is still available before force click
-                            const isStillVisible = await option.isVisible().catch(() => false);
-                            if (isStillVisible) {
-                                await option.click({ force: true });
-                                await page.waitForTimeout(800); // Wait to see if click registered
-                                clickSuccessful = true;
-                                console.log(`    ✅ Force click successful`);
-                            } else {
-                                console.log(`    ℹ️ Element no longer visible, skipping force click`);
-                            }
-                        } catch (e) {
-                            console.log(`    ⚠️ Force click failed: ${e.message}`);
-                        }
-                    }
-                    
-                    // Method 4: JavaScript click if others failed
-                    if (!clickSuccessful) {
-                        try {
-                            // Final check if element is still in DOM before JavaScript click
-                            const elementExists = await option.evaluate(el => el && el.parentNode).catch(() => false);
-                            if (elementExists) {
-                                await option.evaluate(el => el.click());
-                                await page.waitForTimeout(800); // Wait to see if click registered
-                                clickSuccessful = true;
-                                console.log(`    ✅ JavaScript click successful`);
-                            } else {
-                                console.log(`    ℹ️ Element no longer in DOM, skipping JavaScript click`);
-                            }
-                        } catch (e) {
-                            console.log(`    ⚠️ JavaScript click failed: ${e.message}`);
-                        }
-                    }
-                    
-                    // Method 5: Try clicking by text content (last resort for malformed DOM)
-                    if (!clickSuccessful) {
-                        try {
-                            await page.click(`text="${text}"`, { timeout: 2000 });
-                            await page.waitForTimeout(800);
-                            clickSuccessful = true;
-                            console.log(`    ✅ Text-based click successful`);
-                        } catch (e) {
-                            console.log(`    ⚠️ Text-based click failed: ${e.message}`);
-                        }
-                    }
-                    
-                    if (clickSuccessful) {
-                        await page.waitForTimeout(1500);
-                        
-                        // Verify dropdown closed and selection was successful
-                        try {
-                            const dropdownClosed = await page.evaluate(() => {
-                                const results = document.querySelector('#select2-results-18');
-                                return !results || results.style.display === 'none' || !results.offsetParent;
-                            });
-                            
-                            if (dropdownClosed) {
-                                console.log(`    ✅ Tour operator selection confirmed - dropdown closed`);
-                            } else {
-                                console.log(`    ⚠️ Dropdown still open, pressing Escape`);
-                                await page.keyboard.press('Escape');
-                                await page.waitForTimeout(500);
-                            }
-                        } catch (e) {
-                            console.log(`    ℹ️ Could not verify dropdown closure: ${e.message}`);
-                        }
-                        
-                        return true;
-                    } else {
-                        console.log(`    ❌ All click methods failed for tour operator option`);
-                        return false;
-                    }
+                    matches.push({ option, text, priority: 1, matchType: 'exact' });
+                    continue;
+                }
+                
+                // Check if all words from the tour operator are present (medium priority)
+                const tourOperatorWords = cleanTourOperator.split(/\s+/);
+                const allWordsPresent = tourOperatorWords.every(word => 
+                    cleanTextWithoutParens.includes(word.toLowerCase())
+                );
+                
+                if (allWordsPresent) {
+                    console.log(`    ✅ Found all-words match: "${text}" for search "${searchTerm}"`);
+                    matches.push({ option, text, priority: 2, matchType: 'all-words' });
+                    continue;
                 }
                 
                 // Check if the tour operator name starts with the search term (word boundary)
@@ -1535,93 +1472,134 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                     cleanTextWithoutParens.startsWith(searchTermLower + '-') ||
                     cleanTextWithoutParens.startsWith(searchTermLower + '.')) {
                     console.log(`    ✅ Found word boundary match: "${text}" for search "${searchTerm}"`);
-                    
-                    // Try multiple click approaches for better reliability with malformed DOM support
-                    let clickSuccessful = false;
-                    
-                    // Try the same enhanced clicking methods as exact match
-                    for (let method = 1; method <= 5; method++) {
-                        try {
-                            switch (method) {
-                                case 1: // Standard click
-                                    await option.click();
-                                    break;
-                                case 2: // Result label click (for malformed DOM)
-                                    const resultLabel = option.locator('.select2-result-label').first();
-                                    const labelExists = await resultLabel.isVisible().catch(() => false);
-                                    if (labelExists) {
-                                        await resultLabel.click();
-                                    } else {
-                                        continue;
-                                    }
-                                    break;
-                                case 3: // Force click
-                                    await option.click({ force: true });
-                                    break;
-                                case 4: // JavaScript click
-                                    await option.evaluate(el => el.click());
-                                    break;
-                                case 5: // Text-based click
-                                    await page.click(`text="${text}"`, { timeout: 2000 });
-                                    break;
-                            }
-                            
-                            await page.waitForTimeout(800);
-                            clickSuccessful = true;
-                            console.log(`    ✅ Word boundary click successful (method ${method})`);
-                            break;
-                        } catch (e) {
-                            console.log(`    ⚠️ Word boundary click method ${method} failed: ${e.message}`);
-                        }
-                    }
-                    
-                    if (clickSuccessful) {
-                        await page.waitForTimeout(700);
-                        
-                        // Verify dropdown closed
-                        const dropdownClosed = await page.evaluate(() => {
-                            const results = document.querySelector('#select2-results-18');
-                            return !results || results.style.display === 'none' || !results.offsetParent;
-                        });
-                        
-                        if (!dropdownClosed) {
-                            await page.keyboard.press('Escape');
-                            await page.waitForTimeout(500);
-                        }
-                        
-                        return true;
-                    } else {
-                        console.log(`    ❌ All word boundary click methods failed`);
-                        return false;
-                    }
+                    matches.push({ option, text, priority: 3, matchType: 'word-boundary' });
+                    continue;
                 }
                 
                 // Check if the cleaned text contains the full tour operator name as a whole word
                 const wordBoundaryRegex = new RegExp(`\\b${cleanTourOperator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
                 if (wordBoundaryRegex.test(cleanTextWithoutParens)) {
                     console.log(`    ✅ Found word match: "${text}" for search "${searchTerm}"`);
-                    
-                    // Try multiple click approaches for better reliability
+                    matches.push({ option, text, priority: 4, matchType: 'word-regex' });
+                    continue;
+                }
+            }
+            
+            // If we found matches, select the best one
+            if (matches.length > 0) {
+                // Sort by priority (lower number = higher priority)
+                matches.sort((a, b) => a.priority - b.priority);
+                
+                console.log(`    🎯 Found ${matches.length} total matches. Selecting best match:`);
+                matches.forEach((match, index) => {
+                    console.log(`    ${index + 1}. ${match.matchType}: "${match.text}" (priority: ${match.priority})`);
+                });
+                
+                const bestMatch = matches[0];
+                console.log(`    ⭐ Selected best match: "${bestMatch.text}" (${bestMatch.matchType})`);
+                
+                // Try multiple click approaches for better reliability
+                let clickSuccessful = false;
+                
+                // Method 1: Standard click
+                try {
+                    await bestMatch.option.click();
+                    await page.waitForTimeout(800); // Wait to see if click registered
+                    clickSuccessful = true;
+                    console.log(`    ✅ Standard click successful`);
+                } catch (e) {
+                    console.log(`    ⚠️ Standard click failed: ${e.message}`);
+                }
+                
+                // Method 2: Try clicking on the result label (for malformed DOM)
+                if (!clickSuccessful) {
                     try {
-                        await option.click();
-                        await page.waitForTimeout(1500);
-                        
-                        // Verify dropdown closed
+                        const resultLabel = bestMatch.option.locator('.select2-result-label').first();
+                        const labelExists = await resultLabel.isVisible().catch(() => false);
+                        if (labelExists) {
+                            await resultLabel.click();
+                            await page.waitForTimeout(800);
+                            clickSuccessful = true;
+                            console.log(`    ✅ Result label click successful`);
+                        }
+                    } catch (e) {
+                        console.log(`    ⚠️ Result label click failed: ${e.message}`);
+                    }
+                }
+                
+                // Method 3: Force click if standard failed
+                if (!clickSuccessful) {
+                    try {
+                        // Check if element is still available before force click
+                        const isStillVisible = await bestMatch.option.isVisible().catch(() => false);
+                        if (isStillVisible) {
+                            await bestMatch.option.click({ force: true });
+                            await page.waitForTimeout(800); // Wait to see if click registered
+                            clickSuccessful = true;
+                            console.log(`    ✅ Force click successful`);
+                        } else {
+                            console.log(`    ℹ️ Element no longer visible, skipping force click`);
+                        }
+                    } catch (e) {
+                        console.log(`    ⚠️ Force click failed: ${e.message}`);
+                    }
+                }
+                
+                // Method 4: JavaScript click if others failed
+                if (!clickSuccessful) {
+                    try {
+                        // Final check if element is still in DOM before JavaScript click
+                        const elementExists = await bestMatch.option.evaluate(el => el && el.parentNode).catch(() => false);
+                        if (elementExists) {
+                            await bestMatch.option.evaluate(el => el.click());
+                            await page.waitForTimeout(800); // Wait to see if click registered
+                            clickSuccessful = true;
+                            console.log(`    ✅ JavaScript click successful`);
+                        } else {
+                            console.log(`    ℹ️ Element no longer in DOM, skipping JavaScript click`);
+                        }
+                    } catch (e) {
+                        console.log(`    ⚠️ JavaScript click failed: ${e.message}`);
+                    }
+                }
+                
+                // Method 5: Try clicking by text content (last resort for malformed DOM)
+                if (!clickSuccessful) {
+                    try {
+                        await page.click(`text="${bestMatch.text}"`, { timeout: 2000 });
+                        await page.waitForTimeout(800);
+                        clickSuccessful = true;
+                        console.log(`    ✅ Text-based click successful`);
+                    } catch (e) {
+                        console.log(`    ⚠️ Text-based click failed: ${e.message}`);
+                    }
+                }
+                
+                if (clickSuccessful) {
+                    await page.waitForTimeout(1500);
+                    
+                    // Verify dropdown closed and selection was successful
+                    try {
                         const dropdownClosed = await page.evaluate(() => {
                             const results = document.querySelector('#select2-results-18');
                             return !results || results.style.display === 'none' || !results.offsetParent;
                         });
                         
-                        if (!dropdownClosed) {
+                        if (dropdownClosed) {
+                            console.log(`    ✅ Tour operator selection confirmed - dropdown closed`);
+                        } else {
+                            console.log(`    ⚠️ Dropdown still open, pressing Escape`);
                             await page.keyboard.press('Escape');
                             await page.waitForTimeout(500);
                         }
-                        
-                        return true;
                     } catch (e) {
-                        console.log(`    ⚠️ Click failed: ${e.message}`);
-                        return false;
+                        console.log(`    ℹ️ Could not verify dropdown closure: ${e.message}`);
                     }
+                    
+                    return true;
+                } else {
+                    console.log(`    ❌ All click methods failed for tour operator option`);
+                    return false;
                 }
             }
             
