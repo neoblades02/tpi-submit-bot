@@ -7,6 +7,7 @@ The TPI Submit Bot now supports asynchronous processing to handle large datasets
 - **Asynchronous Processing**: Submit jobs that run in the background
 - **Single Login**: Login once per job for maximum efficiency
 - **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
+- **Performance Statistics**: Track login count, crash recoveries, and batch retries for monitoring
 - **Batch Processing**: Data is processed in configurable batches (default: 10 records)
 - **Progress Tracking**: Real-time progress updates with estimated completion time
 - **Job Management**: Cancel, monitor, and retrieve results for multiple jobs
@@ -66,6 +67,11 @@ curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/progress
     "failed": 5,
     "percentage": 11
   },
+  "stats": {
+    "loginCount": 1,
+    "crashRecoveries": 0,
+    "batchRetries": 0
+  },
   "estimatedTimeRemaining": {
     "seconds": 8100,
     "formatted": "2h 15m 0s"
@@ -92,6 +98,11 @@ curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000
     "completed": 150,
     "failed": 5,
     "percentage": 11
+  },
+  "stats": {
+    "loginCount": 1,
+    "crashRecoveries": 0,
+    "batchRetries": 0
   },
   "createdAt": "2024-07-17T23:30:00.000Z",
   "startedAt": "2024-07-17T23:30:05.000Z",
@@ -137,6 +148,11 @@ curl http://localhost:3000/job/123e4567-e89b-12d3-a456-426614174000/results
     "completed": 1350,
     "failed": 57,
     "percentage": 100
+  },
+  "stats": {
+    "loginCount": 1,
+    "crashRecoveries": 0,
+    "batchRetries": 0
   },
   "results": [
     {
@@ -234,17 +250,21 @@ curl -X POST \
 ## Performance Expectations
 Based on current performance (150 records in 1 hour):
 - **Processing speed**: ~24 seconds per record
+- **Login efficiency**: 1 login per job (regardless of dataset size)
+- **Crash recovery**: Automatic session recreation when needed
 - **Batch size 10**: Progress updates every ~4 minutes
 - **Batch size 15**: Progress updates every ~6 minutes
 - **Large datasets**: Processing time scales linearly with record count
 - **Webhook delivery**: Single webhook at completion
+- **Statistics tracking**: Real-time monitoring of login count and crash recoveries
 
 ## Best Practices
 1. **Use appropriate batch sizes**: 10-15 records per batch for good progress granularity
-2. **Monitor progress**: Check `/progress` endpoint every 30-60 seconds
-3. **Handle failures**: Check error messages and retry if needed
-4. **Resource management**: Cancel jobs if no longer needed
-5. **Backup results**: Save results once job completes
+2. **Monitor progress**: Check `/progress` endpoint every 30-60 seconds for real-time stats
+3. **Track performance**: Monitor `stats.loginCount` (should be 1) and `stats.crashRecoveries`
+4. **Handle failures**: Check error messages and retry if needed
+5. **Resource management**: Cancel jobs if no longer needed
+6. **Backup results**: Save results once job completes
 
 ## Error Handling
 - Individual record failures don't stop the job

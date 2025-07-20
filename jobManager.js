@@ -56,6 +56,11 @@ class JobManager extends EventEmitter {
             },
             results: [],
             errors: [],
+            stats: {
+                loginCount: 0,
+                crashRecoveries: 0,
+                batchRetries: 0
+            },
             createdAt: new Date().toISOString(),
             startedAt: null,
             completedAt: null,
@@ -95,6 +100,7 @@ class JobManager extends EventEmitter {
             jobId: jobId,
             status: job.status,
             progress: job.progress,
+            stats: job.stats,
             createdAt: job.createdAt,
             startedAt: job.startedAt,
             completedAt: job.completedAt,
@@ -110,6 +116,7 @@ class JobManager extends EventEmitter {
             jobId: job.id,
             status: job.status,
             progress: job.progress,
+            stats: job.stats,
             createdAt: job.createdAt,
             startedAt: job.startedAt,
             completedAt: job.completedAt
@@ -231,11 +238,15 @@ class JobManager extends EventEmitter {
             
             const session = await loginAndCreateSession();
             
+            // Increment login count
+            job.stats.loginCount++;
+            
             // Send login completed status update
             await this.sendStatusUpdate(job.id, {
                 status: 'login_completed',
                 message: 'Successfully logged in, starting batch processing',
-                progress: job.progress
+                progress: job.progress,
+                stats: job.stats
             });
             
             try {
@@ -326,6 +337,11 @@ class JobManager extends EventEmitter {
                                 // Create a new login session
                                 console.log('🔑 Creating new login session after crash...');
                                 session = await loginAndCreateSession();
+                                
+                                // Increment login count and crash recovery count
+                                job.stats.loginCount++;
+                                job.stats.crashRecoveries++;
+                                
                                 console.log('✅ New session created successfully');
                                 
                                 // Send recovery progress update
@@ -333,7 +349,8 @@ class JobManager extends EventEmitter {
                                     status: 'crash_recovery_login',
                                     message: `New session created, retrying batch ${batchIndex + 1}...`,
                                     progress: job.progress,
-                                    batchIndex: batchIndex + 1
+                                    batchIndex: batchIndex + 1,
+                                    stats: job.stats
                                 });
                                 
                                 // Retry the current batch with new session
@@ -364,7 +381,8 @@ class JobManager extends EventEmitter {
                                     progress: job.progress,
                                     batchCompleted: batchIndex + 1,
                                     totalBatches: batches.length,
-                                    recovered: true
+                                    recovered: true,
+                                    stats: job.stats
                                 });
                                 
                             } catch (recoveryError) {
@@ -406,7 +424,8 @@ class JobManager extends EventEmitter {
                 message: `Job ${job.status}! Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`,
                 progress: job.progress,
                 completedAt: job.completedAt,
-                duration: Date.now() - new Date(job.startedAt).getTime()
+                duration: Date.now() - new Date(job.startedAt).getTime(),
+                stats: job.stats
             });
 
             // Send consolidated webhook with all results when job completes
@@ -457,7 +476,8 @@ class JobManager extends EventEmitter {
                 message: `Job failed: ${error.message}`,
                 progress: job.progress,
                 completedAt: job.completedAt,
-                error: error.message
+                error: error.message,
+                stats: job.stats
             });
         }
     }

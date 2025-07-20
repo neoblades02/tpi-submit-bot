@@ -303,12 +303,12 @@ The bot also sends comprehensive status updates throughout job processing:
 
 **Status Updates Include**:
 - Job started with record count and batch configuration
-- Login progress and completion
+- Login progress and completion with login count statistics
 - Batch completion with progress percentages
-- Browser crash detection and recovery attempts
-- Job completion with final statistics
+- Browser crash detection and recovery attempts with crash statistics
+- Job completion with final statistics including total logins and recoveries
 - Webhook delivery confirmation
-- Error notifications with detailed context
+- Error notifications with detailed context and performance metrics
 
 ### Webhook Features
 

@@ -160,6 +160,7 @@ app.get('/job/:jobId/progress', (req, res) => {
         jobId: jobId,
         status: job.status,
         progress: job.progress,
+        stats: job.stats,
         estimatedTimeRemaining: jobManager.estimateTimeRemaining(job)
     });
 });
@@ -185,6 +186,7 @@ app.get('/job/:jobId/results', (req, res) => {
         jobId: jobId,
         status: job.status,
         progress: job.progress,
+        stats: job.stats,
         results: job.results,
         errors: job.errors,
         completedAt: job.completedAt

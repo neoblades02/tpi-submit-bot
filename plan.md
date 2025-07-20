@@ -245,6 +245,7 @@ The TPI Suitcase Bot is fully implemented with comprehensive automation capabili
 - ✅ **Synchronous Processing**: `/trigger-bot` for small datasets
 - ✅ **Asynchronous Processing**: `/trigger-bot-async` for large datasets
 - ✅ **Job Management System**: Real-time progress tracking and job control
+- ✅ **Performance Statistics**: Login count, crash recovery, and batch retry tracking
 - ✅ **Batch Processing**: Configurable batch sizes for memory efficiency
 - ✅ Advanced Playwright automation for TPI Suitcase portal
 - ✅ Secure login with iframe handling
@@ -261,11 +262,13 @@ The TPI Suitcase Bot is fully implemented with comprehensive automation capabili
 
 ### Production Features
 - ✅ **Browser crash and timeout detection and recovery system**
+- ✅ **Performance monitoring with login count and crash recovery statistics**
 - ✅ **Security-hardened browser configuration**
 - ✅ **Resource management and memory limits**
 - ✅ **Health monitoring and API information endpoints**
 - ✅ **Automatic webhook integration to n8n**
 - ✅ **Comprehensive status tracking with "Submitted" and "InvoiceNumber" fields**
+- ✅ **Real-time status webhooks with performance metrics**
 - ✅ **Docker containerization with production optimization**
 - ✅ **Coolify deployment readiness**
 - ✅ **Complete documentation and deployment guides**
@@ -403,6 +406,7 @@ Each processed record returns with enhanced status information:
 ### Real-Time Status Webhook Integration (Latest Update)
 - ✅ **Comprehensive Status Updates**: Webhook integration to `https://n8n.collectgreatstories.com/webhook/tpi-status`
 - ✅ **Job Lifecycle Tracking**: Status updates for job start, login, batch completion, completion, and failures
+- ✅ **Performance Statistics**: Real-time tracking of login count, crash recoveries, and batch retries
 - ✅ **Crash Recovery Monitoring**: Real-time notifications when crashes are detected and recovery is initiated
 - ✅ **Progress Notifications**: Detailed progress updates including batch completion and estimated duration
 - ✅ **Error Reporting**: Immediate notification of job failures with error details
