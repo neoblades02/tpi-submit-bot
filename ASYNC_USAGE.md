@@ -8,7 +8,7 @@ The TPI Submit Bot now supports asynchronous processing to handle large datasets
 - **Single Login**: Login once per job for maximum efficiency
 - **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
 - **Performance Statistics**: Track login count, crash recoveries, and batch retries for monitoring
-- **Batch Processing**: Data is processed in configurable batches (default: 10 records)
+- **Batch Processing**: Data is processed in configurable batches (default: 50 records)
 - **Progress Tracking**: Real-time progress updates with estimated completion time
 - **Job Management**: Cancel, monitor, and retrieve results for multiple jobs
 - **No Timeouts**: Jobs run independently of HTTP request timeouts
@@ -24,7 +24,7 @@ Submit a large dataset for asynchronous processing.
 curl -X POST \
   -H "Content-Type: application/json" \
   -d @sample.json \
-  "http://localhost:3000/trigger-bot-async?batchSize=10&maxRetries=3"
+  "http://localhost:3000/trigger-bot-async?batchSize=50&maxRetries=3"
 ```
 
 **Response:**
@@ -43,7 +43,7 @@ curl -X POST \
 ```
 
 **Query Parameters:**
-- `batchSize`: Number of records to process per batch (default: 10)
+- `batchSize`: Number of records to process per batch (default: 50)
 - `maxRetries`: Maximum retry attempts per batch (default: 3)
 - `timeout`: Timeout per batch in milliseconds (default: 300000)
 
@@ -259,17 +259,85 @@ Based on current performance (150 records in 1 hour):
 - **Statistics tracking**: Real-time monitoring of login count and crash recoveries
 
 ## Best Practices
-1. **Use appropriate batch sizes**: 10-15 records per batch for good progress granularity
+1. **Use appropriate batch sizes**: 50 records per batch for optimal performance (reduce for more granular progress)
 2. **Monitor progress**: Check `/progress` endpoint every 30-60 seconds for real-time stats
 3. **Track performance**: Monitor `stats.loginCount` (should be 1) and `stats.crashRecoveries`
 4. **Handle failures**: Check error messages and retry if needed
 5. **Resource management**: Cancel jobs if no longer needed
 6. **Backup results**: Save results once job completes
 
-## Error Handling
+## Error Handling & Real-Time Monitoring
+
+### Comprehensive Error Consolidation
+The bot implements **real-time error reporting** with dual webhook integration:
+
+#### Individual Record Error Tracking
+- **Immediate Reporting**: Each record processing error is sent immediately to the status webhook
+- **Detailed Context**: Errors include client name, message, timestamp, processing context, and batch number
+- **Error Categories**: Page readiness, client creation, tour operator selection, form processing failures
+- **Real-Time Notifications**: Errors reported as they occur during processing
+
+#### Job Completion Error Summary
+- **Consolidated Report**: Complete error summary sent when job finishes
+- **Statistics Integration**: Total errors, login count, crash recoveries, batch retries
+- **Performance Metrics**: Processing duration and batch-level statistics
+- **Complete Error List**: All errors from the job consolidated for analysis
+
+### Dual Webhook System
+
+#### Status Webhook (Error & Progress Updates)
+**URL**: `https://n8n.collectgreatstories.com/webhook/tpi-status`
+
+**Real-time notifications for:**
+- Individual record processing errors
+- Job status changes (started, batch completed, completed)
+- Browser crash detection and recovery
+- Login progress and completion
+- Job completion summaries with consolidated errors
+
+**Example Error Payload:**
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2024-07-18T02:45:00.000Z",
+  "status": "record_error",
+  "message": "Record processing error: John Doe",
+  "error": "Tour operator not found in dropdown",
+  "errors": [
+    {
+      "record": "John Doe",
+      "message": "Tour operator not found in dropdown",
+      "timestamp": "2024-07-18T02:45:00.000Z",
+      "context": "tour_operator_selection",
+      "batch": 3
+    }
+  ]
+}
+```
+
+#### Results Webhook (Clean Data Only)
+**URL**: `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
+
+**Consolidated delivery of:**
+- Only successfully processed records
+- Clean data without error information
+- Complete results when job finishes
+- Invoice numbers and submission status
+
+### Error Processing Flow
+1. **Record Error Occurs** → Immediately sent to status webhook
+2. **Error Added to Job** → Stored in job's error collection
+3. **Processing Continues** → Individual failures don't stop the job
+4. **Job Completion** → Summary with all errors sent to status webhook
+5. **Results Delivery** → Clean data sent to results webhook
+
+### Error Resilience Features
 - Individual record failures don't stop the job
 - Batch failures are retried up to `maxRetries` times
-- Critical errors (browser crashes) will fail the entire job
+- Browser crashes are automatically recovered with new login sessions
+- Client creation includes aggressive retry logic with page refresh and popup cleanup
+- Clients are never marked as "not submitted" - always created automatically
+- Only tour operators can cause "not submitted" status when not found in system
 - All errors are logged with timestamps and context
 
 ## Deployment Considerations

@@ -111,6 +111,8 @@ async function loginAndProcess(data, options = {}) {
         }
 
         const processedData = [];
+        const recordErrors = []; // Track individual record processing errors
+        const jobId = options.jobId; // Get jobId from options for webhook reporting
 
         for (const record of data[0].rows) {
             let processingAttempt = 1;
@@ -144,6 +146,14 @@ async function loginAndProcess(data, options = {}) {
                         record.status = 'error';
                         record.Submitted = 'Error - Page Not Ready';
                         record.InvoiceNumber = 'Not Generated';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Page not ready for processing',
+                            timestamp: new Date().toISOString(),
+                            context: 'page_readiness_check'
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
                         recordProcessed = true;
                         break;
                     }
@@ -272,10 +282,18 @@ async function loginAndProcess(data, options = {}) {
                         processingAttempt = 0; // Will be incremented to 1 at the end of the loop
                         continue;
                     } else {
-                        console.log(`  - Failed to create new client: ${clientName}`);
-                        record.status = 'not submitted';
-                        record.Submitted = 'Not Submitted - Client Creation Failed';
-                        record.InvoiceNumber = 'Not Generated';
+                        // Try client creation recovery with page refresh and popup cleanup
+                        const retrySuccess = await retryClientCreationWithRecovery(page, firstName, lastName, clientName);
+                        
+                        if (retrySuccess) {
+                            // Reset processing attempt to restart from beginning
+                            processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                            continue;
+                        } else {
+                            record.status = 'error';
+                            record.Submitted = 'Error - Client Creation Failed After Retry';
+                            record.InvoiceNumber = 'Error';
+                        }
                     }
                 } else {
                     // Check if results were returned
@@ -323,7 +341,7 @@ async function loginAndProcess(data, options = {}) {
                         if (!tourOperatorFound) {
                             console.log(`  - Tour operator not found: ${formState.tourOperator}`);
                             record.status = 'not submitted';
-                            record.Submitted = 'Not Submitted';
+                            record.Submitted = 'Not Submitted - Tour Operator Not Found';
                             record.InvoiceNumber = 'Not Generated';
                         } else {
                             console.log(`  - Selected tour operator: ${formState.tourOperator}`);
@@ -470,10 +488,18 @@ async function loginAndProcess(data, options = {}) {
                             processingAttempt = 0; // Reset to restart from beginning
                             continue;
                         } else {
-                            console.log(`  - Failed to create new client: ${clientName}`);
-                            record.status = 'not submitted';
-                            record.Submitted = 'Not Submitted - Client Creation Failed';
-                            record.InvoiceNumber = 'Not Generated';
+                            // Try client creation recovery with page refresh and popup cleanup
+                            const retrySuccess = await retryClientCreationWithRecovery(page, firstName, lastName, clientName);
+                            
+                            if (retrySuccess) {
+                                // Reset processing attempt to restart from beginning
+                                processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                                continue;
+                            } else {
+                                record.status = 'error';
+                                record.Submitted = 'Error - Client Creation Failed After Retry';
+                                record.InvoiceNumber = 'Error';
+                            }
                         }
                     }
                 }
@@ -523,6 +549,14 @@ async function loginAndProcess(data, options = {}) {
                             record.status = 'error';
                             record.Submitted = 'Error - Browser Crash';
                             record.InvoiceNumber = 'Error';
+                            const recordError = {
+                                record: record['Client Name'] || 'Unknown',
+                                message: 'Browser crash during processing - recovery failed',
+                                timestamp: new Date().toISOString(),
+                                context: 'browser_crash_unrecoverable'
+                            };
+                            recordErrors.push(recordError);
+                            await sendRecordErrorToWebhook(jobId, recordError);
                             recordProcessed = true;
                         }
                     } else if (isBrowserTimeout(e)) {
@@ -540,6 +574,14 @@ async function loginAndProcess(data, options = {}) {
                             record.status = 'error';
                             record.Submitted = 'Error - Browser Timeout';
                             record.InvoiceNumber = 'Error';
+                            const recordError = {
+                                record: record['Client Name'] || 'Unknown',
+                                message: 'Browser timeout during processing - recovery failed',
+                                timestamp: new Date().toISOString(),
+                                context: 'browser_timeout_unrecoverable'
+                            };
+                            recordErrors.push(recordError);
+                            await sendRecordErrorToWebhook(jobId, recordError);
                             recordProcessed = true;
                         }
                     } else {
@@ -547,6 +589,15 @@ async function loginAndProcess(data, options = {}) {
                         record.status = 'error';
                         record.Submitted = 'Error';
                         record.InvoiceNumber = 'Error';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: e.message || 'Unknown processing error',
+                            timestamp: new Date().toISOString(),
+                            context: 'general_processing_error',
+                            stack: e.stack || null
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
                         recordProcessed = true;
                     }
                 }
@@ -2007,6 +2058,69 @@ async function ensurePageReady(page, maxRetries = 3) {
     return false;
 }
 
+// Helper function to retry client creation with page refresh and popup cleanup
+async function retryClientCreationWithRecovery(page, firstName, lastName, clientName) {
+    console.log(`  - Failed to create new client: ${clientName}, attempting recovery...`);
+    
+    // Refresh page to clear any blocking elements
+    console.log(`  - 🔄 Refreshing page to clear blocking elements...`);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(3000);
+    
+    // Navigate back to Quick Submit form
+    console.log(`  - 🔄 Navigating back to Quick Submit form...`);
+    await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+    
+    // Wait for form to load
+    const titleSelector = await findDynamicSelector(page, 'reservation_title');
+    if (titleSelector) {
+        await page.waitForSelector(titleSelector, { timeout: 60000 });
+    } else {
+        await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+    }
+    
+    // Close any existing popups
+    console.log(`  - 🔄 Closing any existing popups...`);
+    await closeCalendarPopupIfOpen(page);
+    
+    // Try to press Escape key multiple times to close any popups
+    for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(1000);
+    }
+    
+    // Retry client creation with fresh page
+    console.log(`  - 🔄 Retrying client creation after page refresh: ${firstName} ${lastName}`);
+    const retryClientCreated = await createNewClient(page, firstName, lastName);
+    
+    if (retryClientCreated) {
+        console.log(`  - ✅ Client creation succeeded on retry, restarting form processing...`);
+        
+        // Another F5 refresh after successful client creation
+        console.log(`  - 🔄 F5 refreshing page after successful client creation...`);
+        await page.reload({ waitUntil: 'networkidle' });
+        await page.waitForTimeout(3000);
+        
+        // Navigate back to Quick Submit form again
+        console.log(`  - 🔄 Navigating back to Quick Submit form after client creation...`);
+        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+        
+        // Wait for form to load again
+        const titleSelectorRetry = await findDynamicSelector(page, 'reservation_title');
+        if (titleSelectorRetry) {
+            await page.waitForSelector(titleSelectorRetry, { timeout: 60000 });
+        } else {
+            await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+        }
+        
+        console.log(`  - ✅ Form ready after client creation retry, restarting entire record processing...`);
+        return true; // Success
+    } else {
+        console.log(`  - ❌ Client creation failed even after page refresh retry: ${clientName}`);
+        return false; // Failed even after retry
+    }
+}
+
 // Helper function to submit form with human-like interaction and validation
 async function submitFormHumanLike(page, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -2387,14 +2501,27 @@ async function recoverFromBrowserIssue(page, record, issueType, attempt = 1, max
 }
 
 // Function to send processed data to webhook
-async function sendToWebhook(processedData) {
+async function sendToWebhook(processedData, jobErrors = []) {
     try {
         const webhookUrl = 'https://n8n.collectgreatstories.com/webhook/bookings-from-tpi';
         
         console.log('Sending data to webhook...');
         console.log(`📤 Sending ${processedData.length} records to webhook`);
         
-        const response = await axios.post(webhookUrl, processedData, {
+        // Prepare consolidated payload with results and errors
+        const payload = {
+            results: processedData,
+            errors: jobErrors || [],
+            summary: {
+                totalRecords: processedData.length,
+                submitted: processedData.filter(r => r.status === 'submitted').length,
+                failed: processedData.filter(r => r.status === 'error' || r.status === 'not submitted').length,
+                errorCount: jobErrors.length,
+                timestamp: new Date().toISOString()
+            }
+        };
+        
+        const response = await axios.post(webhookUrl, payload, {
             headers: {
                 'Content-Type': 'application/json',
             },
@@ -2404,6 +2531,7 @@ async function sendToWebhook(processedData) {
         if (response.status === 200 || response.status === 201) {
             console.log('✅ Data successfully sent to webhook');
             console.log(`📊 Response status: ${response.status}`);
+            console.log(`📊 Summary: ${payload.summary.submitted} submitted, ${payload.summary.failed} failed, ${payload.summary.errorCount} errors`);
         } else {
             console.error('❌ Webhook request failed:', response.status, response.statusText);
         }
@@ -2519,10 +2647,40 @@ async function loginAndCreateSession() {
     };
 }
 
+// Helper function to send individual record errors to status webhook
+async function sendRecordErrorToWebhook(jobId, recordError) {
+    if (!jobId) return; // Skip if no jobId provided (for backward compatibility)
+    
+    try {
+        const payload = {
+            jobId: jobId,
+            timestamp: new Date().toISOString(),
+            status: 'record_error',
+            message: `Record processing error: ${recordError.record}`,
+            error: recordError.message,
+            errors: [recordError] // Single record error
+        };
+        
+        await axios.post('https://n8n.collectgreatstories.com/webhook/tpi-status', payload, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'TPI-Submit-Bot/1.0'
+            },
+            timeout: 10000
+        });
+        
+        console.log(`📡 Record error sent to webhook for: ${recordError.record}`);
+    } catch (error) {
+        console.error(`❌ Failed to send record error to webhook:`, error.message);
+    }
+}
+
 // New function to process records using existing session
 async function processRecordsWithSession(session, data, options = {}) {
     const { page } = session;
     const processedData = [];
+    const recordErrors = []; // Track individual record processing errors
+    const jobId = options.jobId; // Get jobId from options for webhook reporting
 
     try {
         console.log('📋 Navigating to Quick Submit form...');
@@ -2569,6 +2727,14 @@ async function processRecordsWithSession(session, data, options = {}) {
                         record.status = 'error';
                         record.Submitted = 'Error - Page Not Ready';
                         record.InvoiceNumber = 'Not Generated';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Page not ready for processing',
+                            timestamp: new Date().toISOString(),
+                            context: 'page_readiness_check'
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
                         recordProcessed = true;
                         break;
                     }
@@ -2675,10 +2841,18 @@ async function processRecordsWithSession(session, data, options = {}) {
                             processingAttempt = 0; // Will be incremented to 1 at the end of the loop
                             continue;
                         } else {
-                            console.log(`  - Failed to create new client: ${clientName}`);
-                            record.status = 'not submitted';
-                            record.Submitted = 'Not Submitted - Client Creation Failed';
-                            record.InvoiceNumber = 'Not Generated';
+                            // Try client creation recovery with page refresh and popup cleanup
+                            const retrySuccess = await retryClientCreationWithRecovery(page, firstName, lastName, clientName);
+                            
+                            if (retrySuccess) {
+                                // Reset processing attempt to restart from beginning
+                                processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                                continue;
+                            } else {
+                                record.status = 'error';
+                                record.Submitted = 'Error - Client Creation Failed After Retry';
+                                record.InvoiceNumber = 'Error';
+                            }
                         }
                     } else {
                         // Check if results were returned
@@ -2726,7 +2900,7 @@ async function processRecordsWithSession(session, data, options = {}) {
                             if (!tourOperatorFound) {
                                 console.log(`  - Tour operator not found: ${formState.tourOperator}`);
                                 record.status = 'not submitted';
-                                record.Submitted = 'Not Submitted';
+                                record.Submitted = 'Not Submitted - Tour Operator Not Found';
                                 record.InvoiceNumber = 'Not Generated';
                             } else {
                                 console.log(`  - Selected tour operator: ${formState.tourOperator}`);
@@ -2804,9 +2978,67 @@ async function processRecordsWithSession(session, data, options = {}) {
                             }
                         } else {
                             console.log(`  - Client not found: ${clientName} (No matching client in results)`);
-                            record.status = 'not submitted';
-                            record.Submitted = 'Not Submitted - Client Not Found';
-                            record.InvoiceNumber = 'Not Generated';
+                            
+                            // Close the search results popup first
+                            try {
+                                await page.waitForSelector('span.popupClose[aria-label="Close"]', { timeout: 5000 });
+                                await page.click('span.popupClose[aria-label="Close"]');
+                            } catch (e) {
+                                console.log('  - Trying alternative close button selector...');
+                                try {
+                                    await page.click('span.popupClose');
+                                } catch (e2) {
+                                    console.log('  - Trying escape key...');
+                                    await page.keyboard.press('Escape');
+                                }
+                            }
+                            
+                            // Wait for popup to close
+                            await page.waitForTimeout(2000);
+                            
+                            // Try to create new client since exact match wasn't found
+                            console.log(`  - Attempting to create new client: ${firstName} ${lastName}`);
+                            const clientCreated = await createNewClient(page, firstName, lastName);
+                            
+                            if (clientCreated) {
+                                console.log(`  - New client created successfully, restarting form processing...`);
+                                
+                                // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+                                console.log(`  - F5 refreshing entire page to restart processing with new client...`);
+                                await page.reload({ waitUntil: 'networkidle' });
+                                await page.waitForTimeout(3000);
+                                
+                                // Navigate back to Quick Submit form after F5 refresh
+                                console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
+                                await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+                                
+                                // Wait for the form to load
+                                const titleSelector = await findDynamicSelector(page, 'reservation_title');
+                                if (titleSelector) {
+                                    await page.waitForSelector(titleSelector, { timeout: 60000 });
+                                } else {
+                                    await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
+                                }
+                                
+                                console.log(`  - Form refreshed, restarting entire record processing from beginning...`);
+                                
+                                // Reset processingAttempt to restart from the beginning
+                                processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                                continue;
+                            } else {
+                                // Try client creation recovery with page refresh and popup cleanup
+                                const retrySuccess = await retryClientCreationWithRecovery(page, firstName, lastName, clientName);
+                                
+                                if (retrySuccess) {
+                                    // Reset processing attempt to restart from beginning
+                                    processingAttempt = 0; // Will be incremented to 1 at the end of the loop
+                                    continue;
+                                } else {
+                                    record.status = 'error';
+                                    record.Submitted = 'Error - Client Creation Failed After Retry';
+                                    record.InvoiceNumber = 'Error';
+                                }
+                            }
                         }
                     }
 
@@ -2855,6 +3087,14 @@ async function processRecordsWithSession(session, data, options = {}) {
                             record.status = 'error';
                             record.Submitted = 'Error - Browser Crash';
                             record.InvoiceNumber = 'Error';
+                            const recordError = {
+                                record: record['Client Name'] || 'Unknown',
+                                message: 'Browser crash during processing - recovery failed',
+                                timestamp: new Date().toISOString(),
+                                context: 'browser_crash_unrecoverable'
+                            };
+                            recordErrors.push(recordError);
+                            await sendRecordErrorToWebhook(jobId, recordError);
                             recordProcessed = true;
                         }
                     } else if (isBrowserTimeout(e)) {
@@ -2872,6 +3112,14 @@ async function processRecordsWithSession(session, data, options = {}) {
                             record.status = 'error';
                             record.Submitted = 'Error - Browser Timeout';
                             record.InvoiceNumber = 'Error';
+                            const recordError = {
+                                record: record['Client Name'] || 'Unknown',
+                                message: 'Browser timeout during processing - recovery failed',
+                                timestamp: new Date().toISOString(),
+                                context: 'browser_timeout_unrecoverable'
+                            };
+                            recordErrors.push(recordError);
+                            await sendRecordErrorToWebhook(jobId, recordError);
                             recordProcessed = true;
                         }
                     } else {
@@ -2879,6 +3127,15 @@ async function processRecordsWithSession(session, data, options = {}) {
                         record.status = 'error';
                         record.Submitted = 'Error';
                         record.InvoiceNumber = 'Error';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: e.message || 'Unknown processing error',
+                            timestamp: new Date().toISOString(),
+                            context: 'general_processing_error',
+                            stack: e.stack || null
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
                         recordProcessed = true;
                     }
                 }
@@ -2897,11 +3154,24 @@ async function processRecordsWithSession(session, data, options = {}) {
             await sendToWebhook(processedData);
         }
 
+        // Return just the processed records (keep original structure)
         return processedData;
 
     } catch (error) {
         console.error('An error occurred during record processing:', error);
-        throw error;
+        // Send batch processing error to webhook
+        const batchError = {
+            record: 'batch_processing',
+            message: error.message || 'Unknown batch processing error',
+            timestamp: new Date().toISOString(),
+            context: 'batch_processing_failure',
+            stack: error.stack || null
+        };
+        recordErrors.push(batchError);
+        await sendRecordErrorToWebhook(jobId, batchError);
+        
+        // Return partial results and let JobManager handle the error
+        return processedData;
     }
 }
 

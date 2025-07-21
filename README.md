@@ -9,7 +9,7 @@ This project is a comprehensive Node.js bot designed to automate client booking 
 - **Synchronous Processing**: `/trigger-bot` - For small datasets (<50 records)
 - **Asynchronous Processing**: `/trigger-bot-async` - For large datasets (100+ records)
 - **Job Management**: Real-time progress tracking, job cancellation, and result retrieval
-- **Batch Processing**: Configurable batch sizes to prevent memory issues and timeouts
+- **Batch Processing**: Configurable batch sizes to prevent memory issues and timeouts (default: 50 records per batch)
 - **No Timeout Issues**: Perfect for Coolify and other cloud platforms with request limits
 
 ### Security & Authentication
@@ -246,14 +246,16 @@ curl http://localhost:3000/job/{JOB_ID}/results
 ### Status Values
 
 - **`"submitted"` / `"Submitted"`**: Successfully processed and saved with invoice number generated
-- **`"not submitted"` / `"Not Submitted"`**: Client not found or tour operator not found in system
-- **`"error"` / `"Error"`**: Technical error occurred during processing
+- **`"not submitted"` / `"Not Submitted - Tour Operator Not Found"`**: Only when tour operator is not found in system
+- **`"error"` / `"Error - Client Creation Failed After Retry"`**: Technical error after aggressive retry attempts
+
+**Note**: Clients are NEVER marked as "not submitted" - they are always created automatically with retry logic.
 
 ### Invoice Number Values
 
 - **Actual number** (e.g., `"201425570"`): Successfully submitted with generated invoice
-- **`"Not Generated"`**: Record was not submitted due to client/operator not found
-- **`"Error"`**: Technical error prevented invoice number extraction
+- **`"Not Generated"`**: Record was not submitted due to tour operator not found
+- **`"Error"`**: Technical error prevented processing after retry attempts
 
 ---
 
@@ -266,20 +268,28 @@ curl http://localhost:3000/job/{JOB_ID}/results
 3. **Set Reservation Type**: All bookings are set to "Tour FIT" for consistency
 4. **Fill Basic Info**: Reservation title and booking number with dynamic selector detection
 5. **Clear Secondary Customers**: Remove previously selected secondary customers with readonly field detection
-6. **Client Search**: Search by last name with comprehensive popup management
-7. **Client Creation**: Create new client with aggressive dropdown closure and popup cleanup
-8. **Form Restart**: F5-style page refresh and restart processing with completely clean DOM state
-9. **Tour Operator Selection**: Multi-method clicking (Standard → Force → JavaScript) with dropdown verification
-10. **Region Selection**: Popup-protected dropdown interaction with calendar interference prevention
-11. **Date Processing**: Calendar-safe filling with popup prevention before each field
-12. **Financial Data**: Robust price and commission filling with popup protection
-13. **Form Verification**: Pre-submission validation with popup clearing
-14. **Submit and Duplicate**: Popup-protected submission with confirmation popup handling
-15. **Invoice Extraction**: Extract generated invoice number from updated form
-16. **Status Tracking**: Record success/failure status with detailed information
-17. **Webhook Delivery**: Automatically send all processed data to n8n webhook
-18. **Form Reset**: Navigate to fresh form for next record
-19. **Freeze Prevention**: Universal popup prevention, multiple click methods, and comprehensive error recovery
+6. **Enhanced Client Search**: Search by last name with exact name matching
+7. **Universal Client Creation**: Create new clients automatically in two scenarios:
+   - When no search results are found (empty results)
+   - When search results exist but no exact name match is found
+8. **Aggressive Client Creation Retry**: If client creation fails:
+   - Page refresh to clear blocking elements and popups
+   - Navigate back to Quick Submit form with full form state reset
+   - Close all popups using Escape keys and popup cleanup functions
+   - Retry client creation with completely fresh page state
+   - Never results in "not submitted" - always creates missing clients
+9. **Form Restart**: F5-style page refresh and restart processing with completely clean DOM state
+10. **Tour Operator Selection**: Multi-method clicking (Standard → Force → JavaScript) with dropdown verification
+11. **Region Selection**: Popup-protected dropdown interaction with calendar interference prevention
+12. **Date Processing**: Calendar-safe filling with popup prevention before each field
+13. **Financial Data**: Robust price and commission filling with popup protection
+14. **Form Verification**: Pre-submission validation with popup clearing
+15. **Submit and Duplicate**: Popup-protected submission with confirmation popup handling
+16. **Invoice Extraction**: Extract generated invoice number from updated form
+17. **Status Tracking**: Record success/failure status with detailed information
+18. **Webhook Delivery**: Automatically send all processed data to n8n webhook
+19. **Form Reset**: Navigate to fresh form for next record
+20. **Freeze Prevention**: Universal popup prevention, multiple click methods, and comprehensive error recovery
 
 ---
 
@@ -457,19 +467,53 @@ For complete async usage examples, see [ASYNC_USAGE.md](ASYNC_USAGE.md)
 
 ---
 
-## Error Handling
+## Error Handling & Logging
+
+### Real-Time Error Reporting
+
+The bot implements **comprehensive error consolidation** with immediate reporting and job-level summaries:
+
+#### Individual Record Error Tracking
+- **Immediate Notification**: Each record processing error is sent immediately to the status webhook
+- **Detailed Context**: Errors include client name, error message, timestamp, and processing context
+- **Error Categories**: Page readiness, client creation, tour operator selection, form processing, etc.
+- **Real-Time Updates**: Errors are reported as they occur during processing
+
+#### Job-Level Error Consolidation
+- **Summary Reports**: Complete error summary sent at job completion
+- **Statistics Tracking**: Total errors, login counts, crash recoveries, and batch retries
+- **Performance Metrics**: Processing duration and batch-level statistics
+- **Comprehensive Logging**: All errors consolidated for troubleshooting and analysis
+
+### Error Webhook Integration
+
+#### Status Webhook (Error Reporting)
+**URL**: `https://n8n.collectgreatstories.com/webhook/tpi-status`
+- Individual record errors (real-time)
+- Job completion summaries with consolidated errors
+- Progress updates and status changes
+- Crash recovery notifications
+
+#### Results Webhook (Clean Data)
+**URL**: `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
+- Only successfully processed records
+- Clean data without error information
+- Invoice numbers and submission status
 
 ### Client Search Scenarios
 
 - **Client Found**: Proceeds with full automation workflow
-- **No Search Results**: Detects "Sorry, we did not find any results" message and marks as "Not Submitted"
-- **Client Not in Results**: Searches through results table, marks as "Not Submitted" if no match
+- **No Search Results**: Automatically creates new client with retry logic
+- **Client Not in Results**: Creates new client if no exact match found
+- **Client Creation Success**: Records success and continues processing
+- **Client Creation Failure**: Reports detailed error with context
 
 ### Tour Operator Scenarios
 
 - **Operator Found**: Continues with workflow
 - **Operator Not Found**: Searches with scrolling, marks as "Not Submitted" if not found after multiple attempts
 - **False Positive Prevention**: Enhanced matching prevents "Viator" from matching "Aviator Hotel" using word boundaries
+- **Selection Errors**: Reports tour operator selection failures with specific error details
 
 ### Form Robustness Scenarios
 
@@ -477,14 +521,16 @@ For complete async usage examples, see [ASYNC_USAGE.md](ASYNC_USAGE.md)
 - **Field State Loss**: Preserves form data across retry attempts using form state management
 - **Selector Changes**: Uses dynamic selector detection with multiple fallback patterns
 - **Input Field Detection**: Identifies active input fields while avoiding disabled elements
+- **Processing Errors**: Each form interaction error is tracked and reported
 
 ### Technical Error Handling
 
-- **Network Issues**: Comprehensive timeout handling and retry logic
-- **Element Not Found**: Detailed error logging with specific element information  
-- **Form Submission Errors**: Popup handling with fallback mechanisms
+- **Network Issues**: Comprehensive timeout handling and retry logic with error reporting
+- **Element Not Found**: Detailed error logging with specific element information sent to webhook
+- **Form Submission Errors**: Popup handling with fallback mechanisms and error tracking
 - **Webhook Delivery**: Error logging with response status and data
-- **Browser Recovery**: Crash detection and recovery with form state preservation
+- **Browser Recovery**: Crash detection and recovery with form state preservation and notification
+- **Batch Processing Errors**: Individual batch failures reported without stopping entire job
 
 ---
 
@@ -544,10 +590,11 @@ tpi-submit-bot/
 ### Common Issues
 
 1. **Login Failures**: Verify USERNAME and PASSWORD in `.env` file
-2. **Client Not Found**: Ensure client exists in TPI Suitcase system with correct spelling
-3. **Tour Operator Issues**: Check operator name spelling and availability in dropdown
+2. **Client Issues**: No longer an issue - clients are automatically created with aggressive retry logic
+3. **Tour Operator Issues**: Check operator name spelling and availability in dropdown (only cause of "not submitted")
 4. **Webhook Failures**: Verify n8n endpoint is accessible and accepting requests
 5. **Date Format Errors**: Ensure dates are in MM/DD/YYYY format
+6. **Client Creation Retry**: If you see "Error - Client Creation Failed After Retry", check for browser/network issues
 
 ### Debugging
 
@@ -562,7 +609,7 @@ Enable detailed logging by running with `headless: false` during development to 
 - **Single Login**: Login once per job (not per batch) for maximum efficiency
 - **Automatic Crash Recovery**: Browser crashes are automatically recovered with new login session
 - **Real-Time Status Webhooks**: Comprehensive status updates sent to `https://n8n.collectgreatstories.com/webhook/tpi-status`
-- **Batch Processing**: Processes records in configurable batches (default: 10 records)
+- **Batch Processing**: Processes records in configurable batches (default: 50 records)
 - **Scalable Performance**: Handles hundreds to thousands of records efficiently
 - **Real-time Monitoring**: Track progress with estimated completion times
 - **Error Resilience**: Individual failures don't stop the entire job

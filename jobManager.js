@@ -64,6 +64,7 @@ class JobManager extends EventEmitter {
                 
                 // Error information (present when applicable)
                 error: statusData.error || null,
+                errors: statusData.errors || null,
                 
                 // Additional metadata (present when applicable)
                 metadata: {
@@ -115,7 +116,7 @@ class JobManager extends EventEmitter {
             completedAt: null,
             estimatedDuration: null,
             options: {
-                batchSize: options.batchSize || 10,
+                batchSize: options.batchSize || 50,
                 maxRetries: options.maxRetries || 3,
                 timeout: options.timeout || 300000, // 5 minutes per batch
                 ...options
@@ -230,9 +231,18 @@ class JobManager extends EventEmitter {
                 job.status = 'failed';
                 job.errors.push({
                     message: error.message,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    context: 'processQueue'
                 });
                 job.completedAt = new Date().toISOString();
+                
+                // Send queue processing error status update with consolidated errors
+                await this.sendStatusUpdate(jobId, {
+                    status: 'queue_processing_failed',
+                    message: `Queue processing failed: ${error.message}`,
+                    error: error.message,
+                    errors: job.errors.length > 0 ? job.errors : null
+                });
             }
         }
 
@@ -306,12 +316,30 @@ class JobManager extends EventEmitter {
                         console.log(`Processing batch ${batchIndex + 1}/${batches.length} (using existing session)`);
                         
                         // Process batch using existing session - no login needed
-                        const batchResults = await processRecordsWithSession(session, batchData, { sendWebhook: false });
+                        const batchResults = await processRecordsWithSession(session, batchData, { 
+                            sendWebhook: false,
+                            jobId: job.id // Pass jobId for individual error reporting 
+                        });
+                        
+                        // Handle return structure (bot returns just records)
+                        const records = batchResults;
+                        
+                        // Count record-level errors and add to job errors for summary
+                        const recordErrors = records.filter(r => r.status === 'error' || r.status === 'not submitted');
+                        recordErrors.forEach(errorRecord => {
+                            job.errors.push({
+                                record: errorRecord['Client Name'] || 'Unknown',
+                                message: errorRecord.Submitted || 'Processing failed',
+                                timestamp: new Date().toISOString(),
+                                context: 'record_processing_failure',
+                                batch: batchIndex + 1
+                            });
+                        });
                         
                         // Update job progress
-                        job.results = job.results.concat(batchResults);
-                        job.progress.completed += batchResults.filter(r => r.status === 'submitted').length;
-                        job.progress.failed += batchResults.filter(r => r.status === 'error' || r.status === 'not submitted').length;
+                        job.results = job.results.concat(records);
+                        job.progress.completed += records.filter(r => r.status === 'submitted').length;
+                        job.progress.failed += records.filter(r => r.status === 'error' || r.status === 'not submitted').length;
                         job.progress.percentage = Math.round((job.progress.completed + job.progress.failed) / job.progress.total * 100);
 
                         const batchDuration = Date.now() - batchStartTime;
@@ -344,7 +372,9 @@ class JobManager extends EventEmitter {
                         job.errors.push({
                             batch: batchIndex + 1,
                             message: batchError.message,
-                            timestamp: new Date().toISOString()
+                            timestamp: new Date().toISOString(),
+                            context: 'batch_processing',
+                            stack: batchError.stack || null
                         });
                         
                         // Check if this is a browser crash that we can recover from
@@ -361,7 +391,8 @@ class JobManager extends EventEmitter {
                                 status: 'crash_detected',
                                 message: `Browser crash detected in batch ${batchIndex + 1}, attempting recovery...`,
                                 batchIndex: batchIndex + 1,
-                                error: batchError.message
+                                error: batchError.message,
+                                errors: job.errors.length > 0 ? job.errors.slice(-10) : null // Last 10 errors for context
                             });
                             
                             try {
@@ -394,12 +425,31 @@ class JobManager extends EventEmitter {
                                 
                                 // Retry the current batch with new session
                                 console.log(`🔄 Retrying batch ${batchIndex + 1} with new session...`);
-                                const retryResults = await processRecordsWithSession(session, batchData, { sendWebhook: false });
+                                const retryResults = await processRecordsWithSession(session, batchData, { 
+                                    sendWebhook: false,
+                                    jobId: job.id // Pass jobId for individual error reporting
+                                });
+                                
+                                // Handle retry results (bot returns just records)
+                                const retryRecords = retryResults;
+                                
+                                // Count record-level errors from retry and add to job errors
+                                const retryErrors = retryRecords.filter(r => r.status === 'error' || r.status === 'not submitted');
+                                retryErrors.forEach(errorRecord => {
+                                    job.errors.push({
+                                        record: errorRecord['Client Name'] || 'Unknown',
+                                        message: errorRecord.Submitted || 'Processing failed',
+                                        timestamp: new Date().toISOString(),
+                                        context: 'record_processing_failure_retry',
+                                        batch: batchIndex + 1,
+                                        retryAttempt: true
+                                    });
+                                });
                                 
                                 // Update job progress with retry results
-                                job.results = job.results.concat(retryResults);
-                                job.progress.completed += retryResults.filter(r => r.status === 'submitted').length;
-                                job.progress.failed += retryResults.filter(r => r.status === 'error' || r.status === 'not submitted').length;
+                                job.results = job.results.concat(retryRecords);
+                                job.progress.completed += retryRecords.filter(r => r.status === 'submitted').length;
+                                job.progress.failed += retryRecords.filter(r => r.status === 'error' || r.status === 'not submitted').length;
                                 job.progress.percentage = Math.round((job.progress.completed + job.progress.failed) / job.progress.total * 100);
                                 
                                 console.log(`✅ Batch ${batchIndex + 1} recovered successfully`);
@@ -429,7 +479,18 @@ class JobManager extends EventEmitter {
                                 job.errors.push({
                                     batch: batchIndex + 1,
                                     message: `Recovery failed: ${recoveryError.message}`,
-                                    timestamp: new Date().toISOString()
+                                    timestamp: new Date().toISOString(),
+                                    context: 'crash_recovery',
+                                    stack: recoveryError.stack || null
+                                });
+                                
+                                // Send recovery failure status update with all accumulated errors
+                                await this.sendStatusUpdate(job.id, {
+                                    status: 'recovery_failed',
+                                    message: `Recovery failed for batch ${batchIndex + 1}: ${recoveryError.message}`,
+                                    batchIndex: batchIndex + 1,
+                                    error: recoveryError.message,
+                                    errors: job.errors.length > 0 ? job.errors : null
                                 });
                                 
                                 // Stop processing if recovery fails
@@ -455,12 +516,13 @@ class JobManager extends EventEmitter {
 
             console.log(`Job ${job.id} completed. Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`);
 
-            // Send job completion status update
+            // Send job completion status update with consolidated errors
             await this.sendStatusUpdate(job.id, {
                 status: job.status,
                 message: `Job ${job.status}! Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`,
                 completedAt: job.completedAt,
-                duration: Date.now() - new Date(job.startedAt).getTime()
+                duration: Date.now() - new Date(job.startedAt).getTime(),
+                errors: job.errors.length > 0 ? job.errors : null
             });
 
             // Send consolidated webhook with all results when job completes
@@ -481,34 +543,57 @@ class JobManager extends EventEmitter {
                     console.error(`Error sending webhook for job ${job.id}:`, webhookError);
                     job.errors.push({
                         message: `Webhook delivery failed: ${webhookError.message}`,
-                        timestamp: new Date().toISOString()
+                        timestamp: new Date().toISOString(),
+                        context: 'webhook_delivery',
+                        stack: webhookError.stack || null
                     });
                     
-                    // Send webhook error status update
+                    // Send webhook error status update with all errors for logging
                     await this.sendStatusUpdate(job.id, {
                         status: 'webhook_error',
                         message: `Failed to send consolidated webhook: ${webhookError.message}`,
-                        error: webhookError.message
+                        error: webhookError.message,
+                        errors: job.errors.length > 0 ? job.errors : null
                     });
                 }
             }
+
+            // Send job completion summary to status webhook
+            await this.sendStatusUpdate(job.id, {
+                status: 'job_completed_summary',
+                message: `Job processing complete. Total: ${job.progress.total}, Submitted: ${job.progress.completed}, Failed: ${job.progress.failed}`,
+                summary: {
+                    totalRecords: job.progress.total,
+                    submittedRecords: job.progress.completed,
+                    failedRecords: job.progress.failed,
+                    errorCount: job.errors.length,
+                    loginCount: job.stats.loginCount,
+                    crashRecoveries: job.stats.crashRecoveries,
+                    batchRetries: job.stats.batchRetries,
+                    processingDuration: Date.now() - new Date(job.startedAt).getTime()
+                },
+                errors: job.errors.length > 0 ? job.errors : null
+            });
 
         } catch (error) {
             job.status = 'failed';
             job.errors.push({
                 message: error.message,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                context: 'job_processing',
+                stack: error.stack || null
             });
             job.completedAt = new Date().toISOString();
             
             console.error(`Job ${job.id} failed:`, error);
             
-            // Send job failure status update
+            // Send job failure status update with consolidated errors
             await this.sendStatusUpdate(job.id, {
                 status: 'failed',
                 message: `Job failed: ${error.message}`,
                 completedAt: job.completedAt,
-                error: error.message
+                error: error.message,
+                errors: job.errors.length > 0 ? job.errors : null
             });
         }
     }

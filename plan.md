@@ -23,7 +23,7 @@ This document outlines the development plan for the TPI Suitcase automation bot 
 - **Synchronous Processing**: `/trigger-bot` endpoint for small datasets (<50 records)
 - **Asynchronous Processing**: `/trigger-bot-async` endpoint for large datasets (100+ records)
 - **Job Management**: Real-time progress tracking, job cancellation, and result retrieval
-- **Batch Processing**: Configurable batch sizes to prevent memory issues and platform timeouts
+- **Batch Processing**: Configurable batch sizes to prevent memory issues and platform timeouts (default: 50 records per batch)
 
 ### Technical Foundation
 - **Browser Automation**: Uses Playwright with Chromium browser (headless: true for production) 
@@ -78,13 +78,17 @@ This document outlines the development plan for the TPI Suitcase automation bot 
 - **Submission Validation**: Verifies form submission success through multiple methods (popup confirmation, URL changes)
 - **Retry Logic**: Automatically retries submission up to 3 times if initial attempt fails
 - **Invoice Number Extraction**: Extracts invoice number from updated reservation title (e.g., "Tour FIT - Invoice # 201425570 - Copy")
-- **Webhook Integration**: Automatically sends all processed data to n8n webhook at `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
-- **Enhanced Error Recovery**: Gracefully handles form clearing issues and field validation failures
+- **Dual Webhook Integration**: 
+  - **Results Webhook**: Sends clean processed data to `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
+  - **Status Webhook**: Sends real-time error reports and job summaries to `https://n8n.collectgreatstories.com/webhook/tpi-status`
+- **Real-Time Error Consolidation**: Individual record errors sent immediately to status webhook during processing
+- **Job Completion Error Summary**: Complete error summary with statistics sent to status webhook at job completion
 - **Enhanced Status Tracking**: Returns detailed status for each record:
   - `Submitted`: Successfully processed and saved with invoice number
   - `Not Submitted`: Client not found or tour operator not found
   - `Error`: Technical error during processing
-- **JSON Response**: Adds `Submitted`, `InvoiceNumber` fields and posts complete data to webhook
+- **JSON Response**: Adds `Submitted`, `InvoiceNumber` fields and posts complete data to results webhook
+- **Comprehensive Error Reporting**: All errors tracked with client name, message, timestamp, context, and batch information
 
 ## Technical Implementation Details
 
@@ -236,6 +240,38 @@ This document outlines the development plan for the TPI Suitcase automation bot 
   - [x] Batch processing for memory efficiency
   - [x] Background job processing
 
+### Phase 6: Error Consolidation & Real-Time Monitoring (Completed)
+
+- [x] **Comprehensive Error Consolidation System**
+  - [x] Implement real-time individual record error reporting
+  - [x] Add immediate error webhook notifications during processing
+  - [x] Create job completion error summary with consolidated errors
+  - [x] Integrate error statistics with performance metrics
+
+- [x] **Dual Webhook Architecture**
+  - [x] Status webhook for error reporting and job monitoring
+  - [x] Results webhook for clean data delivery
+  - [x] Standardized JSON schema for consistent webhook payloads
+  - [x] Real-time progress and error status updates
+
+- [x] **Error Tracking Implementation**
+  - [x] Individual record error tracking with detailed context
+  - [x] Error categorization (page readiness, client creation, tour operator selection)
+  - [x] Batch-level error tracking and reporting
+  - [x] Complete error consolidation in job summaries
+
+- [x] **Documentation Updates**
+  - [x] Update README.md with error consolidation features
+  - [x] Enhance ASYNC_USAGE.md with error handling documentation
+  - [x] Expand WEBHOOK_SCHEMA.md with error reporting schema
+  - [x] Update plan.md with completed error consolidation implementation
+
+- [x] **Code Quality & Verification**
+  - [x] Fix missing variable declarations in error handling functions
+  - [x] Implement comprehensive error webhook integration
+  - [x] Complete code review and syntax validation
+  - [x] Ensure production-ready error consolidation system
+
 ## Current Status
 
 The TPI Suitcase Bot is fully implemented with comprehensive automation capabilities:
@@ -266,7 +302,10 @@ The TPI Suitcase Bot is fully implemented with comprehensive automation capabili
 - ✅ **Security-hardened browser configuration**
 - ✅ **Resource management and memory limits**
 - ✅ **Health monitoring and API information endpoints**
-- ✅ **Automatic webhook integration to n8n**
+- ✅ **Dual webhook integration**: Results and status webhooks
+- ✅ **Real-time error consolidation and reporting**
+- ✅ **Individual record error tracking with immediate notifications**
+- ✅ **Job completion error summaries with comprehensive statistics**
 - ✅ **Comprehensive status tracking with "Submitted" and "InvoiceNumber" fields**
 - ✅ **Real-time status webhooks with performance metrics**
 - ✅ **Docker containerization with production optimization**
@@ -311,7 +350,17 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### F5-Style Page Refresh Enhancement (Latest Update)
+### Error Consolidation & Real-Time Monitoring System (Latest Update)
+- ✅ **Real-Time Error Reporting**: Individual record errors sent immediately to status webhook during processing
+- ✅ **Dual Webhook Architecture**: Status webhook for errors and monitoring, results webhook for clean data
+- ✅ **Comprehensive Error Tracking**: Client name, message, timestamp, context, and batch information for each error
+- ✅ **Job Completion Error Summary**: Consolidated error report with statistics sent at job completion
+- ✅ **Error Categorization**: Page readiness, client creation, tour operator selection, form processing errors
+- ✅ **Performance Integration**: Error count, login count, crash recoveries integrated in job summaries
+- ✅ **Code Quality Improvements**: Fixed missing variable declarations and implemented comprehensive error handling
+- ✅ **Documentation Updates**: Complete error consolidation documentation across all files
+
+### F5-Style Page Refresh Enhancement (Previous Update)
 - ✅ **True Browser Refresh**: Replaced `page.goto()` with `page.reload()` for authentic F5-style page refresh after client creation
 - ✅ **Complete DOM Reset**: Ensures all malformed DOM structures and JavaScript states are completely cleared
 - ✅ **Network Idle Wait**: Uses `waitUntil: 'networkidle'` to ensure page is fully loaded before proceeding
@@ -395,7 +444,27 @@ Each processed record returns with enhanced status information:
 
 ## Latest Updates
 
-### Single Login Architecture & Crash Recovery (Latest Update)
+### Enhanced Client Creation Logic (Latest Update)
+- ✅ **Universal Client Creation**: Bot now creates new clients in both scenarios:
+  - When no search results are found (empty results)
+  - When search results exist but no exact name match is found (e.g., "Mikayla Clark" not found among other "Clark" clients)
+- ✅ **Improved Client Handling**: Eliminates "Not Submitted - Client Not Found" errors by automatically creating missing clients
+- ✅ **Exact Name Matching**: Only selects clients when first name AND last name match exactly
+- ✅ **Aggressive Client Creation Retry Logic**: When client creation fails:
+  - Page refresh to clear blocking elements and popups
+  - Navigate back to Quick Submit form
+  - Close all popups with Escape keys and popup cleanup
+  - Retry client creation with fresh page state
+  - F5 refresh after successful creation and restart entire form processing
+  - Only fails with "Error - Client Creation Failed After Retry" if all attempts fail
+- ✅ **Proper Status Classification**: 
+  - Clients: Always created automatically with retry logic (never "not submitted")
+  - Tour Operators: "Not Submitted - Tour Operator Not Found" when not found in system
+  - Client Creation Failures: "Error - Client Creation Failed After Retry" (only after aggressive retry attempts)
+- ✅ **Seamless Form Restart**: After client creation, performs F5 refresh and restarts processing with clean DOM state
+- ✅ **Complete Documentation Update**: All documentation reflects new client creation behavior and status messages
+
+### Single Login Architecture & Crash Recovery (Recent Update)
 - ✅ **Single Login Per Job**: Reduced login frequency from 141 logins (one per batch) to 1 login per entire job for maximum efficiency
 - ✅ **Session Reuse**: Browser session is created once and reused across all batches within a job
 - ✅ **Automatic Browser Crash Recovery**: Detects browser crashes and automatically recreates sessions to continue processing
@@ -426,7 +495,7 @@ Each processed record returns with enhanced status information:
 ### Asynchronous Processing System (Previous Update)
 - ✅ **Job Queue Management**: Added JobManager class for background processing
 - ✅ **Progress Tracking**: Real-time progress updates with estimated completion times
-- ✅ **Batch Processing**: Configurable batch sizes (default: 10 records per batch)
+- ✅ **Batch Processing**: Configurable batch sizes (default: 50 records per batch)
 - ✅ **Job Control**: Cancel, monitor, and retrieve results for background jobs
 - ✅ **Timeout Prevention**: Perfect solution for Coolify and cloud platform timeouts
 

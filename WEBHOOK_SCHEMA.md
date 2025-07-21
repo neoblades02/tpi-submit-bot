@@ -38,6 +38,7 @@ This document defines the standardized JSON schema sent to `https://n8n.collectg
     "totalRecords": "number"
   },
   "error": "string | null",
+  "errors": "array | null",
   "metadata": {
     "recovered": "boolean",
     "resultsCount": "number | null"
@@ -49,17 +50,32 @@ This document defines the standardized JSON schema sent to `https://n8n.collectg
 
 The `status` field will contain one of these exact values:
 
+### Job Lifecycle Status
 - `"started"` - Job has begun processing
 - `"logging_in"` - Bot is logging into TPI Suitcase
 - `"login_completed"` - Login successful, starting batch processing
 - `"batch_completed"` - A batch has finished processing
+- `"completed"` - Job finished successfully
+- `"failed"` - Job failed with error
+
+### Error Reporting Status
+- `"record_error"` - Individual record processing error (real-time)
+- `"queue_processing_failed"` - Queue processing error
+- `"recovery_failed"` - Crash recovery attempt failed
+
+### Crash Recovery Status
 - `"crash_detected"` - Browser crash detected, attempting recovery
 - `"crash_recovery_login"` - New session created after crash
 - `"crash_recovery_success"` - Batch successfully recovered after crash
-- `"completed"` - Job finished successfully
-- `"failed"` - Job failed with error
+
+### Webhook Status
 - `"webhook_sent"` - Data webhook delivery successful
 - `"webhook_error"` - Data webhook delivery failed
+
+### Job Summary Status
+- `"job_completed_summary"` - Final job completion with consolidated error summary
+
+**Note**: Clients are automatically created with aggressive retry logic, so "client not found" errors are eliminated.
 
 ## Example Payloads
 
@@ -92,7 +108,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -132,7 +148,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -172,7 +188,7 @@ The `status` field will contain one of these exact values:
     "duration": 240000
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -212,7 +228,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -252,7 +268,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -292,7 +308,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": null,
@@ -332,7 +348,7 @@ The `status` field will contain one of these exact values:
     "duration": null
   },
   "config": {
-    "batchSize": 10,
+    "batchSize": 50,
     "totalRecords": 150
   },
   "error": "Multiple login failures",
@@ -359,5 +375,138 @@ The `status` field will contain one of these exact values:
 - **Performance Monitoring**: Login count and crash recovery stats in every update
 - **Progress Tracking**: Complete progress information always available
 - **Error Handling**: Standardized error information when applicable
+
+### Individual Record Error (Real-Time)
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2024-07-21T10:35:30.000Z",
+  "status": "record_error",
+  "message": "Record processing error: John Doe",
+  "progress": {
+    "total": 150,
+    "completed": 12,
+    "failed": 3,
+    "percentage": 10
+  },
+  "stats": {
+    "loginCount": 1,
+    "crashRecoveries": 0,
+    "batchRetries": 0
+  },
+  "timing": {
+    "startedAt": "2024-07-21T10:30:00.000Z",
+    "completedAt": null,
+    "duration": null
+  },
+  "batch": {
+    "current": 1,
+    "total": 15,
+    "duration": null
+  },
+  "config": {
+    "batchSize": 50,
+    "totalRecords": 150
+  },
+  "error": "Tour operator not found in dropdown",
+  "errors": [
+    {
+      "record": "John Doe",
+      "message": "Tour operator not found in dropdown",
+      "timestamp": "2024-07-21T10:35:30.000Z",
+      "context": "tour_operator_selection",
+      "batch": 1
+    }
+  ],
+  "metadata": {
+    "recovered": false,
+    "resultsCount": null
+  }
+}
+```
+
+### Job Completion Summary with Consolidated Errors
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2024-07-21T11:30:10.000Z",
+  "status": "job_completed_summary",
+  "message": "Job processing complete. Total: 150, Submitted: 142, Failed: 8",
+  "progress": {
+    "total": 150,
+    "completed": 142,
+    "failed": 8,
+    "percentage": 100
+  },
+  "stats": {
+    "loginCount": 2,
+    "crashRecoveries": 1,
+    "batchRetries": 0
+  },
+  "timing": {
+    "startedAt": "2024-07-21T10:30:00.000Z",
+    "completedAt": "2024-07-21T11:30:00.000Z",
+    "duration": 3600000
+  },
+  "batch": {
+    "current": null,
+    "total": null,
+    "duration": null
+  },
+  "config": {
+    "batchSize": 50,
+    "totalRecords": 150
+  },
+  "error": null,
+  "errors": [
+    {
+      "record": "John Doe",
+      "message": "Tour operator not found in dropdown",
+      "timestamp": "2024-07-21T10:35:30.000Z",
+      "context": "tour_operator_selection",
+      "batch": 1
+    },
+    {
+      "record": "Jane Smith",
+      "message": "Page not ready for processing",
+      "timestamp": "2024-07-21T10:42:15.000Z",
+      "context": "page_readiness_check",
+      "batch": 2
+    }
+  ],
+  "metadata": {
+    "recovered": false,
+    "resultsCount": null
+  },
+  "summary": {
+    "totalRecords": 150,
+    "submittedRecords": 142,
+    "failedRecords": 8,
+    "errorCount": 8,
+    "loginCount": 2,
+    "crashRecoveries": 1,
+    "batchRetries": 0,
+    "processingDuration": 3600000
+  }
+}
+```
+
+## Error Consolidation Features
+
+### Real-Time Error Reporting
+- **Individual Record Errors**: Sent immediately when record processing fails
+- **Detailed Context**: Each error includes client name, message, timestamp, and processing context
+- **Batch Information**: Error tracking includes which batch the error occurred in
+- **Error Categories**: Page readiness, client creation, tour operator selection, form processing
+
+### Job Summary Error Consolidation
+- **Complete Error List**: All errors from the job consolidated in final summary
+- **Statistics Integration**: Error count, login count, crash recoveries in summary
+- **Performance Metrics**: Total processing duration and batch statistics
+- **Comprehensive Logging**: All error details preserved for analysis and troubleshooting
+
+### Dual Webhook Architecture
+- **Status Webhook**: Receives both individual errors and job summaries for complete monitoring
+- **Results Webhook**: Receives only clean, successfully processed records for data integration
 
 This schema ensures that n8n workflows can process all status updates reliably without conditional logic for missing fields.
