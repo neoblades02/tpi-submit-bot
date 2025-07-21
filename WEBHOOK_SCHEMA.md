@@ -425,7 +425,7 @@ The `status` field will contain one of these exact values:
 }
 ```
 
-### Individual Record Error - Tour Operator Not Found (Real-Time)
+### Individual Record Error - Tour Operator Not Found (Strict Matching)
 ```json
 {
   "jobId": "123e4567-e89b-12d3-a456-426614174000",
@@ -457,11 +457,11 @@ The `status` field will contain one of these exact values:
     "batchSize": 50,
     "totalRecords": 150
   },
-  "error": "Tour operator not found in dropdown",
+  "error": "Tour operator not found - no dropdown option contains all required words",
   "errors": [
     {
-      "record": "John Doe",
-      "message": "Tour operator not found in dropdown",
+      "record": "John Doe", 
+      "message": "Tour operator 'Hilton Fast Pay' not found - no option contains all words (hilton, fast, pay)",
       "timestamp": "2024-07-21T10:35:30.000Z",
       "context": "tour_operator_selection",
       "batch": 1
@@ -546,7 +546,7 @@ The `status` field will contain one of these exact values:
 - **Individual Record Errors**: Sent immediately when record processing fails
 - **Detailed Context**: Each error includes client name, message, timestamp, and processing context
 - **Batch Information**: Error tracking includes which batch the error occurred in
-- **Error Categories**: Client name validation, page readiness, client creation, tour operator selection, form processing
+- **Error Categories**: Client name validation, page readiness, client creation, strict tour operator selection, form processing
 
 ### Job Summary Error Consolidation
 - **Complete Error List**: All errors from the job consolidated in final summary

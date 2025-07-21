@@ -317,18 +317,18 @@ The bot implements **real-time error reporting** with dual webhook integration:
 }
 ```
 
-*Tour Operator Not Found:*
+*Tour Operator Not Found (Strict Matching):*
 ```json
 {
   "jobId": "123e4567-e89b-12d3-a456-426614174000",
   "timestamp": "2024-07-18T02:45:00.000Z",
   "status": "record_error",
   "message": "Record processing error: John Doe",
-  "error": "Tour operator not found in dropdown",
+  "error": "Tour operator not found - no dropdown option contains all required words",
   "errors": [
     {
       "record": "John Doe",
-      "message": "Tour operator not found in dropdown",
+      "message": "Tour operator 'Hilton Fast Pay' not found - no option contains all words (hilton, fast, pay)",
       "timestamp": "2024-07-18T02:45:00.000Z",
       "context": "tour_operator_selection",
       "batch": 3
@@ -360,7 +360,9 @@ The bot implements **real-time error reporting** with dual webhook integration:
 - Client creation includes aggressive retry logic with page refresh and popup cleanup
 - Client name validation prevents processing records with blank names
 - Clients are automatically created when names are provided (never "not submitted" for client issues)
-- Only blank client names and tour operators not found can cause "not submitted" status
+- **Strict tour operator matching**: ALL words from tour operator must exist in dropdown option
+- **False positive prevention**: Partial matches rejected (e.g., "Hilton Fast Pay" won't match "Hilton Hotels")
+- Only blank client names and tour operators with missing words cause "not submitted" status
 - All errors are logged with timestamps and context
 
 ## Deployment Considerations

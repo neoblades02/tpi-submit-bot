@@ -30,11 +30,13 @@ This project is a comprehensive Node.js bot designed to automate client booking 
   - Restarts form processing after successful client creation with fresh browser environment.
   - Handles "no results found" scenarios with proper error messaging.
   - Selects the correct client from results table or closes popup if not found.
-- **Freeze-Resistant Tour Operator Selection**:
+- **Strict Tour Operator Selection**:
   - Multi-method clicking (Standard → Force → JavaScript) for maximum reliability.
-  - Enhanced matching logic with exact matches and word boundaries to prevent false positives.
+  - **Strict All-Words Matching**: Requires ALL words from tour operator to be present in dropdown option.
+  - **False Positive Prevention**: Rejects partial matches (e.g., "Hilton Fast Pay" won't match "Hilton Hotels").
+  - **Complete Word Boundaries**: Uses regex word boundaries to prevent substring false matches.
   - Dropdown closure verification and automatic escape key fallback.
-  - Handles cases where operator is not found in the system.
+  - Marks as "Not Submitted" when no valid match contains all required words.
 - **Popup-Protected Regional and Date Processing**:
   - Calendar popup prevention before all field interactions.
   - Automatically selects "United States" as destination region with popup protection.
@@ -513,9 +515,11 @@ The bot implements **comprehensive error consolidation** with immediate reportin
 
 ### Tour Operator Scenarios
 
-- **Operator Found**: Continues with workflow
-- **Operator Not Found**: Searches with scrolling, marks as "Not Submitted" if not found after multiple attempts
-- **False Positive Prevention**: Enhanced matching prevents "Viator" from matching "Aviator Hotel" using word boundaries
+- **Exact Match Found**: Continues with workflow using perfect match
+- **All Words Match**: Selects option containing ALL words from tour operator (e.g., "Hilton Fast Pay" matches "Hilton Fast Pay Hotels")
+- **Partial Match Rejected**: Prevents incorrect selections (e.g., "Hilton Fast Pay" will NOT match "Hilton Hotels & Resorts")
+- **Operator Not Found**: Marks as "Not Submitted - Tour Operator Not Found" if no option contains all required words
+- **Strict Word Boundaries**: Uses complete word matching to prevent false positives like "Viator" matching "Aviator Hotel"
 - **Selection Errors**: Reports tour operator selection failures with specific error details
 
 ### Form Robustness Scenarios
@@ -595,7 +599,7 @@ tpi-submit-bot/
 1. **Login Failures**: Verify USERNAME and PASSWORD in `.env` file
 2. **Client Name Issues**: Ensure client names are not blank or empty in input data
 3. **Client Issues**: No longer an issue - clients are automatically created with aggressive retry logic (except when name is blank)
-4. **Tour Operator Issues**: Check operator name spelling and availability in dropdown (only cause of "not submitted" besides blank client names)
+4. **Tour Operator Issues**: Ensure ALL words from tour operator name exist in system dropdown options (strict matching prevents wrong selections)
 5. **Webhook Failures**: Verify n8n endpoint is accessible and accepting requests
 6. **Date Format Errors**: Ensure dates are in MM/DD/YYYY format
 7. **Client Creation Retry**: If you see "Error - Client Creation Failed After Retry", check for browser/network issues

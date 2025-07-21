@@ -50,9 +50,18 @@ This document outlines the development plan for the TPI Suitcase automation bot 
 1. **Dropdown Interaction**: Clicks tour operator dropdown (`span.select2-chosen#select2-chosen-18`)
 2. **Progressive Word Search**: Implements intelligent search strategy starting with first word, then 2 words, continuing until match found
 3. **Dynamic Search Input**: Uses `findDynamicSelector()` to locate vendor input field with multiple fallback strategies
-4. **Results Validation**: Checks dropdown results in `ul#select2-results-18` for exact or partial matches
-5. **Enhanced Matching**: Prioritizes exact matches, uses word boundaries, and regex patterns to prevent false positives (e.g., "Viator" won't match "Aviator Hotel")
-6. **Fallback Handling**: Marks as "Not Submitted" if tour operator not found after trying all word combinations
+4. **Results Validation**: Checks dropdown results in `ul#select2-results-18` using strict matching algorithms
+5. **Strict All-Words Matching**: 
+   - **Priority 1**: Exact matches (including text without parentheses)
+   - **Priority 2**: All-words matches - EVERY word from tour operator must be present as complete words
+   - **Priority 3**: Phrase matches - exact phrase found within dropdown option
+   - **Rejection Logic**: Eliminates partial matches that could cause incorrect selections
+6. **Enhanced Word Boundaries**: Uses regex word boundaries (`\b`) to ensure complete word matches, preventing false positives
+7. **False Positive Prevention**: 
+   - "Hilton Fast Pay" will match "Hilton Fast Pay Hotels" ✅
+   - "Hilton Fast Pay" will NOT match "Hilton Hotels & Resorts" ❌ (missing "Fast" and "Pay")
+   - "Viator" will NOT match "Aviator Hotel" ❌ (word boundaries prevent substring matches)
+8. **Strict Fallback**: Marks as "Not Submitted - Tour Operator Not Found" if no dropdown option contains ALL required words
 
 ### Regional Settings (`bot.js`)
 1. **Region Selection**: Automatically selects "United States" as destination region
@@ -351,7 +360,11 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### Client Name Validation & Error Consolidation System (Latest Update)
+### Strict Tour Operator Matching & Error Consolidation System (Latest Update)
+- ✅ **Strict All-Words Matching**: Tour operator selection now requires ALL words to be present in dropdown option
+- ✅ **False Positive Prevention**: Eliminates incorrect matches (e.g., "Hilton Fast Pay" won't select "Hilton Hotels & Resorts")
+- ✅ **Word Boundary Protection**: Uses regex word boundaries to prevent substring false matches
+- ✅ **Accurate Selection Logic**: Prioritizes exact matches, then all-words matches, then phrase matches
 - ✅ **Client Name Validation**: Records with blank or empty client names marked as "Not Submitted - Client Name Missing" immediately
 - ✅ **Fast Processing**: Invalid records skipped without browser automation to prevent timeouts and crashes
 - ✅ **Real-Time Error Reporting**: Individual record errors sent immediately to status webhook during processing
@@ -361,7 +374,7 @@ Each processed record returns with enhanced status information:
 - ✅ **Error Categorization**: Client name validation, page readiness, client creation, tour operator selection, form processing errors
 - ✅ **Performance Integration**: Error count, login count, crash recoveries integrated in job summaries
 - ✅ **Code Quality Improvements**: Fixed missing variable declarations and implemented comprehensive error handling
-- ✅ **Documentation Updates**: Complete error consolidation documentation across all files
+- ✅ **Documentation Updates**: Complete documentation updates across all files
 
 ### F5-Style Page Refresh Enhancement (Previous Update)
 - ✅ **True Browser Refresh**: Replaced `page.goto()` with `page.reload()` for authentic F5-style page refresh after client creation
