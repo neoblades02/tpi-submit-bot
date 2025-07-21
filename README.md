@@ -246,10 +246,11 @@ curl http://localhost:3000/job/{JOB_ID}/results
 ### Status Values
 
 - **`"submitted"` / `"Submitted"`**: Successfully processed and saved with invoice number generated
-- **`"not submitted"` / `"Not Submitted - Tour Operator Not Found"`**: Only when tour operator is not found in system
+- **`"not submitted"` / `"Not Submitted - Client Name Missing"`**: When client name is blank or empty
+- **`"not submitted"` / `"Not Submitted - Tour Operator Not Found"`**: When tour operator is not found in system
 - **`"error"` / `"Error - Client Creation Failed After Retry"`**: Technical error after aggressive retry attempts
 
-**Note**: Clients are NEVER marked as "not submitted" - they are always created automatically with retry logic.
+**Note**: Clients are automatically created with retry logic, except when client name is blank or missing.
 
 ### Invoice Number Values
 
@@ -268,28 +269,29 @@ curl http://localhost:3000/job/{JOB_ID}/results
 3. **Set Reservation Type**: All bookings are set to "Tour FIT" for consistency
 4. **Fill Basic Info**: Reservation title and booking number with dynamic selector detection
 5. **Clear Secondary Customers**: Remove previously selected secondary customers with readonly field detection
-6. **Enhanced Client Search**: Search by last name with exact name matching
-7. **Universal Client Creation**: Create new clients automatically in two scenarios:
+6. **Client Name Validation**: Check if client name is blank or empty and mark as "not submitted" immediately if invalid
+7. **Enhanced Client Search**: Search by last name with exact name matching
+8. **Universal Client Creation**: Create new clients automatically in two scenarios:
    - When no search results are found (empty results)
    - When search results exist but no exact name match is found
-8. **Aggressive Client Creation Retry**: If client creation fails:
+9. **Aggressive Client Creation Retry**: If client creation fails:
    - Page refresh to clear blocking elements and popups
    - Navigate back to Quick Submit form with full form state reset
    - Close all popups using Escape keys and popup cleanup functions
    - Retry client creation with completely fresh page state
-   - Never results in "not submitted" - always creates missing clients
-9. **Form Restart**: F5-style page refresh and restart processing with completely clean DOM state
-10. **Tour Operator Selection**: Multi-method clicking (Standard → Force → JavaScript) with dropdown verification
-11. **Region Selection**: Popup-protected dropdown interaction with calendar interference prevention
-12. **Date Processing**: Calendar-safe filling with popup prevention before each field
-13. **Financial Data**: Robust price and commission filling with popup protection
-14. **Form Verification**: Pre-submission validation with popup clearing
-15. **Submit and Duplicate**: Popup-protected submission with confirmation popup handling
-16. **Invoice Extraction**: Extract generated invoice number from updated form
-17. **Status Tracking**: Record success/failure status with detailed information
-18. **Webhook Delivery**: Automatically send all processed data to n8n webhook
-19. **Form Reset**: Navigate to fresh form for next record
-20. **Freeze Prevention**: Universal popup prevention, multiple click methods, and comprehensive error recovery
+   - Never results in "not submitted" - always creates missing clients (unless client name is blank)
+10. **Form Restart**: F5-style page refresh and restart processing with completely clean DOM state
+11. **Tour Operator Selection**: Multi-method clicking (Standard → Force → JavaScript) with dropdown verification
+12. **Region Selection**: Popup-protected dropdown interaction with calendar interference prevention
+13. **Date Processing**: Calendar-safe filling with popup prevention before each field
+14. **Financial Data**: Robust price and commission filling with popup protection
+15. **Form Verification**: Pre-submission validation with popup clearing
+16. **Submit and Duplicate**: Popup-protected submission with confirmation popup handling
+17. **Invoice Extraction**: Extract generated invoice number from updated form
+18. **Status Tracking**: Record success/failure status with detailed information
+19. **Webhook Delivery**: Automatically send all processed data to n8n webhook
+20. **Form Reset**: Navigate to fresh form for next record
+21. **Freeze Prevention**: Universal popup prevention, multiple click methods, and comprehensive error recovery
 
 ---
 
@@ -502,6 +504,7 @@ The bot implements **comprehensive error consolidation** with immediate reportin
 
 ### Client Search Scenarios
 
+- **Client Name Missing**: Records marked as "Not Submitted - Client Name Missing" immediately without processing
 - **Client Found**: Proceeds with full automation workflow
 - **No Search Results**: Automatically creates new client with retry logic
 - **Client Not in Results**: Creates new client if no exact match found
@@ -590,11 +593,12 @@ tpi-submit-bot/
 ### Common Issues
 
 1. **Login Failures**: Verify USERNAME and PASSWORD in `.env` file
-2. **Client Issues**: No longer an issue - clients are automatically created with aggressive retry logic
-3. **Tour Operator Issues**: Check operator name spelling and availability in dropdown (only cause of "not submitted")
-4. **Webhook Failures**: Verify n8n endpoint is accessible and accepting requests
-5. **Date Format Errors**: Ensure dates are in MM/DD/YYYY format
-6. **Client Creation Retry**: If you see "Error - Client Creation Failed After Retry", check for browser/network issues
+2. **Client Name Issues**: Ensure client names are not blank or empty in input data
+3. **Client Issues**: No longer an issue - clients are automatically created with aggressive retry logic (except when name is blank)
+4. **Tour Operator Issues**: Check operator name spelling and availability in dropdown (only cause of "not submitted" besides blank client names)
+5. **Webhook Failures**: Verify n8n endpoint is accessible and accepting requests
+6. **Date Format Errors**: Ensure dates are in MM/DD/YYYY format
+7. **Client Creation Retry**: If you see "Error - Client Creation Failed After Retry", check for browser/network issues
 
 ### Debugging
 

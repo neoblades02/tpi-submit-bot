@@ -189,6 +189,25 @@ async function loginAndProcess(data, options = {}) {
 
                 // 4. Search for Client Name using the search popup
                 const clientName = record['Client Name'];
+                
+                // Check if client name is blank or empty
+                if (!clientName || clientName.trim() === '') {
+                    console.log(`  - Client name is blank, marking as not submitted`);
+                    record.status = 'not submitted';
+                    record.Submitted = 'Not Submitted - Client Name Missing';
+                    record.InvoiceNumber = 'Not Generated';
+                    const recordError = {
+                        record: 'Unknown Client',
+                        message: 'Client name is blank or missing',
+                        timestamp: new Date().toISOString(),
+                        context: 'client_name_validation'
+                    };
+                    recordErrors.push(recordError);
+                    await sendRecordErrorToWebhook(jobId, recordError);
+                    recordProcessed = true;
+                    break;
+                }
+                
                 const [firstName, ...lastNameParts] = clientName.split(' ');
                 const lastName = lastNameParts.join(' ');
 
@@ -2770,6 +2789,25 @@ async function processRecordsWithSession(session, data, options = {}) {
 
                     // 4. Search for Client Name using the search popup
                     const clientName = record['Client Name'];
+                    
+                    // Check if client name is blank or empty
+                    if (!clientName || clientName.trim() === '') {
+                        console.log(`  - Client name is blank, marking as not submitted`);
+                        record.status = 'not submitted';
+                        record.Submitted = 'Not Submitted - Client Name Missing';
+                        record.InvoiceNumber = 'Not Generated';
+                        const recordError = {
+                            record: 'Unknown Client',
+                            message: 'Client name is blank or missing',
+                            timestamp: new Date().toISOString(),
+                            context: 'client_name_validation'
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
+                        recordProcessed = true;
+                        break;
+                    }
+                    
                     const [firstName, ...lastNameParts] = clientName.split(' ');
                     const lastName = lastNameParts.join(' ');
 

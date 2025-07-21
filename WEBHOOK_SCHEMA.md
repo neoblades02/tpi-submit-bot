@@ -376,7 +376,56 @@ The `status` field will contain one of these exact values:
 - **Progress Tracking**: Complete progress information always available
 - **Error Handling**: Standardized error information when applicable
 
-### Individual Record Error (Real-Time)
+### Individual Record Error - Client Name Missing (Real-Time)
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2024-07-21T10:35:15.000Z",
+  "status": "record_error",
+  "message": "Record processing error: Unknown Client",
+  "progress": {
+    "total": 150,
+    "completed": 10,
+    "failed": 2,
+    "percentage": 8
+  },
+  "stats": {
+    "loginCount": 1,
+    "crashRecoveries": 0,
+    "batchRetries": 0
+  },
+  "timing": {
+    "startedAt": "2024-07-21T10:30:00.000Z",
+    "completedAt": null,
+    "duration": null
+  },
+  "batch": {
+    "current": 1,
+    "total": 15,
+    "duration": null
+  },
+  "config": {
+    "batchSize": 50,
+    "totalRecords": 150
+  },
+  "error": "Client name is blank or missing",
+  "errors": [
+    {
+      "record": "Unknown Client",
+      "message": "Client name is blank or missing",
+      "timestamp": "2024-07-21T10:35:15.000Z",
+      "context": "client_name_validation",
+      "batch": 1
+    }
+  ],
+  "metadata": {
+    "recovered": false,
+    "resultsCount": null
+  }
+}
+```
+
+### Individual Record Error - Tour Operator Not Found (Real-Time)
 ```json
 {
   "jobId": "123e4567-e89b-12d3-a456-426614174000",
@@ -497,7 +546,7 @@ The `status` field will contain one of these exact values:
 - **Individual Record Errors**: Sent immediately when record processing fails
 - **Detailed Context**: Each error includes client name, message, timestamp, and processing context
 - **Batch Information**: Error tracking includes which batch the error occurred in
-- **Error Categories**: Page readiness, client creation, tour operator selection, form processing
+- **Error Categories**: Client name validation, page readiness, client creation, tour operator selection, form processing
 
 ### Job Summary Error Consolidation
 - **Complete Error List**: All errors from the job consolidated in final summary
@@ -507,6 +556,6 @@ The `status` field will contain one of these exact values:
 
 ### Dual Webhook Architecture
 - **Status Webhook**: Receives both individual errors and job summaries for complete monitoring
-- **Results Webhook**: Receives only clean, successfully processed records for data integration
+- **Results Webhook**: Receives ALL records (successful and failed) with status information for data integration
 
 This schema ensures that n8n workflows can process all status updates reliably without conditional logic for missing fields.

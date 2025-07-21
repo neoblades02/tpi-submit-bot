@@ -36,14 +36,15 @@ This document outlines the development plan for the TPI Suitcase automation bot 
 - **Advanced Form Processing**: For each record received, the bot performs comprehensive form automation:
 
 ### Client Search & Handling (`bot.js`)
-1. **Secondary Customers Field Clearing**: Automatically clears any previously selected secondary customers to prevent confusion between main and secondary customer fields
-2. **Smart Client Search**: Searches by last name using the search popup
-3. **New Client Creation**: When client not found, creates new client with first name, last name, and "No Middle Name" checkbox, then performs F5-style page refresh
-4. **Client Search Restart**: After creating a new client, performs complete page reload (F5) and restarts entire processing sequence for the same record with clean DOM
-5. **Client Matching**: Matches clients by first name and last name from search results
-6. **Close Button**: Uses close icon (`span.popupClose`) when no results found
-7. **Done Button**: Clicks "Done" button (`#zc-adv-btn-finish`) after successful client selection
-8. **Critical Field Check**: After successful client selection, performs basic validation of reservation title and booking number to ensure they weren't cleared
+1. **Client Name Validation**: Immediately marks records as "Not Submitted - Client Name Missing" if client name is blank or empty
+2. **Secondary Customers Field Clearing**: Automatically clears any previously selected secondary customers to prevent confusion between main and secondary customer fields
+3. **Smart Client Search**: Searches by last name using the search popup
+4. **New Client Creation**: When client not found, creates new client with first name, last name, and "No Middle Name" checkbox, then performs F5-style page refresh
+5. **Client Search Restart**: After creating a new client, performs complete page reload (F5) and restarts entire processing sequence for the same record with clean DOM
+6. **Client Matching**: Matches clients by first name and last name from search results
+7. **Close Button**: Uses close icon (`span.popupClose`) when no results found
+8. **Done Button**: Clicks "Done" button (`#zc-adv-btn-finish`) after successful client selection
+9. **Critical Field Check**: After successful client selection, performs basic validation of reservation title and booking number to ensure they weren't cleared
 
 ### Tour Operator Selection (`bot.js`)
 1. **Dropdown Interaction**: Clicks tour operator dropdown (`span.select2-chosen#select2-chosen-18`)
@@ -350,12 +351,14 @@ Each processed record returns with enhanced status information:
 
 ## Recent Improvements
 
-### Error Consolidation & Real-Time Monitoring System (Latest Update)
+### Client Name Validation & Error Consolidation System (Latest Update)
+- ✅ **Client Name Validation**: Records with blank or empty client names marked as "Not Submitted - Client Name Missing" immediately
+- ✅ **Fast Processing**: Invalid records skipped without browser automation to prevent timeouts and crashes
 - ✅ **Real-Time Error Reporting**: Individual record errors sent immediately to status webhook during processing
-- ✅ **Dual Webhook Architecture**: Status webhook for errors and monitoring, results webhook for clean data
+- ✅ **Dual Webhook Architecture**: Status webhook for errors and monitoring, results webhook for all records with status
 - ✅ **Comprehensive Error Tracking**: Client name, message, timestamp, context, and batch information for each error
 - ✅ **Job Completion Error Summary**: Consolidated error report with statistics sent at job completion
-- ✅ **Error Categorization**: Page readiness, client creation, tour operator selection, form processing errors
+- ✅ **Error Categorization**: Client name validation, page readiness, client creation, tour operator selection, form processing errors
 - ✅ **Performance Integration**: Error count, login count, crash recoveries integrated in job summaries
 - ✅ **Code Quality Improvements**: Fixed missing variable declarations and implemented comprehensive error handling
 - ✅ **Documentation Updates**: Complete error consolidation documentation across all files

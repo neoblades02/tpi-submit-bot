@@ -274,7 +274,7 @@ The bot implements **real-time error reporting** with dual webhook integration:
 #### Individual Record Error Tracking
 - **Immediate Reporting**: Each record processing error is sent immediately to the status webhook
 - **Detailed Context**: Errors include client name, message, timestamp, processing context, and batch number
-- **Error Categories**: Page readiness, client creation, tour operator selection, form processing failures
+- **Error Categories**: Client name validation, page readiness, client creation, tour operator selection, form processing failures
 - **Real-Time Notifications**: Errors reported as they occur during processing
 
 #### Job Completion Error Summary
@@ -295,7 +295,29 @@ The bot implements **real-time error reporting** with dual webhook integration:
 - Login progress and completion
 - Job completion summaries with consolidated errors
 
-**Example Error Payload:**
+**Example Error Payloads:**
+
+*Client Name Missing:*
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2024-07-18T02:45:00.000Z",
+  "status": "record_error",
+  "message": "Record processing error: Unknown Client",
+  "error": "Client name is blank or missing",
+  "errors": [
+    {
+      "record": "Unknown Client",
+      "message": "Client name is blank or missing",
+      "timestamp": "2024-07-18T02:45:00.000Z",
+      "context": "client_name_validation",
+      "batch": 2
+    }
+  ]
+}
+```
+
+*Tour Operator Not Found:*
 ```json
 {
   "jobId": "123e4567-e89b-12d3-a456-426614174000",
@@ -315,14 +337,14 @@ The bot implements **real-time error reporting** with dual webhook integration:
 }
 ```
 
-#### Results Webhook (Clean Data Only)
+#### Results Webhook (All Records)
 **URL**: `https://n8n.collectgreatstories.com/webhook/bookings-from-tpi`
 
 **Consolidated delivery of:**
-- Only successfully processed records
-- Clean data without error information
+- ALL processed records (successful and failed)
+- Complete status information for each record
 - Complete results when job finishes
-- Invoice numbers and submission status
+- Invoice numbers and submission status for all records
 
 ### Error Processing Flow
 1. **Record Error Occurs** → Immediately sent to status webhook
@@ -336,8 +358,9 @@ The bot implements **real-time error reporting** with dual webhook integration:
 - Batch failures are retried up to `maxRetries` times
 - Browser crashes are automatically recovered with new login sessions
 - Client creation includes aggressive retry logic with page refresh and popup cleanup
-- Clients are never marked as "not submitted" - always created automatically
-- Only tour operators can cause "not submitted" status when not found in system
+- Client name validation prevents processing records with blank names
+- Clients are automatically created when names are provided (never "not submitted" for client issues)
+- Only blank client names and tour operators not found can cause "not submitted" status
 - All errors are logged with timestamps and context
 
 ## Deployment Considerations
