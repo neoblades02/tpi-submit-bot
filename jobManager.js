@@ -12,15 +12,64 @@ class JobManager extends EventEmitter {
         this.statusWebhookUrl = 'https://n8n.collectgreatstories.com/webhook/tpi-status';
     }
 
-    // Send status update to webhook
+    // Send status update to webhook with standardized JSON schema
     async sendStatusUpdate(jobId, statusData) {
         try {
             console.log(`📡 Sending status update for job ${jobId}...`);
             
+            const job = this.jobs.get(jobId);
+            
+            // Standardized JSON schema for consistent n8n workflow processing
             const payload = {
+                // Core identifiers (always present)
                 jobId: jobId,
                 timestamp: new Date().toISOString(),
-                ...statusData
+                status: statusData.status || 'unknown',
+                message: statusData.message || '',
+                
+                // Progress information (always present with defaults)
+                progress: {
+                    total: job?.progress?.total || 0,
+                    completed: job?.progress?.completed || 0,
+                    failed: job?.progress?.failed || 0,
+                    percentage: job?.progress?.percentage || 0
+                },
+                
+                // Statistics (always present with defaults)
+                stats: {
+                    loginCount: job?.stats?.loginCount || 0,
+                    crashRecoveries: job?.stats?.crashRecoveries || 0,
+                    batchRetries: job?.stats?.batchRetries || 0
+                },
+                
+                // Job timing (always present with null defaults)
+                timing: {
+                    startedAt: job?.startedAt || null,
+                    completedAt: statusData.completedAt || job?.completedAt || null,
+                    duration: statusData.duration || null
+                },
+                
+                // Batch information (present when applicable)
+                batch: {
+                    current: statusData.batchIndex || statusData.batchCompleted || null,
+                    total: statusData.totalBatches || null,
+                    duration: statusData.batchDuration || null
+                },
+                
+                // Job configuration (always present)
+                config: {
+                    batchSize: job?.options?.batchSize || null,
+                    totalRecords: job?.progress?.total || statusData.totalRecords || 0
+                },
+                
+                // Error information (present when applicable)
+                error: statusData.error || null,
+                
+                // Additional metadata (present when applicable)
+                metadata: {
+                    recovered: statusData.recovered || false,
+                    resultsCount: statusData.resultsCount || null
+                }
             };
             
             const response = await axios.post(this.statusWebhookUrl, payload, {
@@ -200,10 +249,7 @@ class JobManager extends EventEmitter {
         // Send job started status update
         await this.sendStatusUpdate(job.id, {
             status: 'started',
-            message: `Job started with ${job.progress.total} records`,
-            totalRecords: job.progress.total,
-            batchSize: job.options.batchSize,
-            startedAt: job.startedAt
+            message: `Job started with ${job.progress.total} records`
         });
 
         try {
@@ -232,8 +278,7 @@ class JobManager extends EventEmitter {
             // Send login status update
             await this.sendStatusUpdate(job.id, {
                 status: 'logging_in',
-                message: 'Logging in to TPI Suitcase...',
-                progress: job.progress
+                message: 'Logging in to TPI Suitcase...'
             });
             
             const session = await loginAndCreateSession();
@@ -244,9 +289,7 @@ class JobManager extends EventEmitter {
             // Send login completed status update
             await this.sendStatusUpdate(job.id, {
                 status: 'login_completed',
-                message: 'Successfully logged in, starting batch processing',
-                progress: job.progress,
-                stats: job.stats
+                message: 'Successfully logged in, starting batch processing'
             });
             
             try {
@@ -286,7 +329,6 @@ class JobManager extends EventEmitter {
                         await this.sendStatusUpdate(job.id, {
                             status: 'batch_completed',
                             message: `Batch ${batchIndex + 1}/${batches.length} completed`,
-                            progress: job.progress,
                             batchCompleted: batchIndex + 1,
                             totalBatches: batches.length,
                             batchDuration: batchDuration
@@ -318,7 +360,6 @@ class JobManager extends EventEmitter {
                             await this.sendStatusUpdate(job.id, {
                                 status: 'crash_detected',
                                 message: `Browser crash detected in batch ${batchIndex + 1}, attempting recovery...`,
-                                progress: job.progress,
                                 batchIndex: batchIndex + 1,
                                 error: batchError.message
                             });
@@ -348,9 +389,7 @@ class JobManager extends EventEmitter {
                                 await this.sendStatusUpdate(job.id, {
                                     status: 'crash_recovery_login',
                                     message: `New session created, retrying batch ${batchIndex + 1}...`,
-                                    progress: job.progress,
-                                    batchIndex: batchIndex + 1,
-                                    stats: job.stats
+                                    batchIndex: batchIndex + 1
                                 });
                                 
                                 // Retry the current batch with new session
@@ -378,11 +417,9 @@ class JobManager extends EventEmitter {
                                 await this.sendStatusUpdate(job.id, {
                                     status: 'crash_recovery_success',
                                     message: `Batch ${batchIndex + 1} recovered successfully after crash`,
-                                    progress: job.progress,
                                     batchCompleted: batchIndex + 1,
                                     totalBatches: batches.length,
-                                    recovered: true,
-                                    stats: job.stats
+                                    recovered: true
                                 });
                                 
                             } catch (recoveryError) {
@@ -422,10 +459,8 @@ class JobManager extends EventEmitter {
             await this.sendStatusUpdate(job.id, {
                 status: job.status,
                 message: `Job ${job.status}! Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`,
-                progress: job.progress,
                 completedAt: job.completedAt,
-                duration: Date.now() - new Date(job.startedAt).getTime(),
-                stats: job.stats
+                duration: Date.now() - new Date(job.startedAt).getTime()
             });
 
             // Send consolidated webhook with all results when job completes
@@ -440,7 +475,6 @@ class JobManager extends EventEmitter {
                     await this.sendStatusUpdate(job.id, {
                         status: 'webhook_sent',
                         message: `Consolidated webhook sent with ${job.results.length} results`,
-                        progress: job.progress,
                         resultsCount: job.results.length
                     });
                 } catch (webhookError) {
@@ -454,7 +488,6 @@ class JobManager extends EventEmitter {
                     await this.sendStatusUpdate(job.id, {
                         status: 'webhook_error',
                         message: `Failed to send consolidated webhook: ${webhookError.message}`,
-                        progress: job.progress,
                         error: webhookError.message
                     });
                 }
@@ -474,10 +507,8 @@ class JobManager extends EventEmitter {
             await this.sendStatusUpdate(job.id, {
                 status: 'failed',
                 message: `Job failed: ${error.message}`,
-                progress: job.progress,
                 completedAt: job.completedAt,
-                error: error.message,
-                stats: job.stats
+                error: error.message
             });
         }
     }
