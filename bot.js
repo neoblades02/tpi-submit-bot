@@ -1523,34 +1523,38 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                     continue;
                 }
                 
-                // Check if all words from the tour operator are present (medium priority)
-                const tourOperatorWords = cleanTourOperator.split(/\s+/);
-                const allWordsPresent = tourOperatorWords.every(word => 
-                    cleanTextWithoutParens.includes(word.toLowerCase())
-                );
+                // Check if ALL words from the tour operator are present as complete words (strict matching)
+                const tourOperatorWords = cleanTourOperator.split(/\s+/).filter(word => word.length > 0);
+                const allWordsPresent = tourOperatorWords.every(word => {
+                    // Use word boundaries to ensure complete word matches (not just substrings)
+                    const wordRegex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                    const isPresent = wordRegex.test(cleanTextWithoutParens);
+                    
+                    if (!isPresent) {
+                        console.log(`    ❌ Required word "${word}" NOT found in "${cleanTextWithoutParens}"`);
+                    } else {
+                        console.log(`    ✅ Required word "${word}" found in "${cleanTextWithoutParens}"`);
+                    }
+                    return isPresent;
+                });
                 
-                if (allWordsPresent) {
-                    console.log(`    ✅ Found all-words match: "${text}" for search "${searchTerm}"`);
+                if (allWordsPresent && tourOperatorWords.length > 0) {
+                    console.log(`    ✅ STRICT MATCH: "${text}" contains all ${tourOperatorWords.length} required words from "${cleanTourOperator}"`);
                     matches.push({ option, text, priority: 2, matchType: 'all-words' });
                     continue;
+                } else if (tourOperatorWords.length > 0) {
+                    console.log(`    ❌ REJECTED: "${text}" missing required words from "${cleanTourOperator}"`);
                 }
                 
-                // Check if the tour operator name starts with the search term (word boundary)
-                const searchTermLower = searchTerm.toLowerCase().trim();
-                if (cleanTextWithoutParens.startsWith(searchTermLower + ' ') || 
-                    cleanTextWithoutParens === searchTermLower ||
-                    cleanTextWithoutParens.startsWith(searchTermLower + '-') ||
-                    cleanTextWithoutParens.startsWith(searchTermLower + '.')) {
-                    console.log(`    ✅ Found word boundary match: "${text}" for search "${searchTerm}"`);
-                    matches.push({ option, text, priority: 3, matchType: 'word-boundary' });
-                    continue;
-                }
+                // REMOVED: Partial word boundary matching causes incorrect selections
+                // Only use strict all-words matching to prevent wrong tour operator selection
                 
-                // Check if the cleaned text contains the full tour operator name as a whole word
+                // Check if the cleaned text contains the full tour operator name as a whole phrase
+                // This is a fallback for exact phrase matches with different formatting
                 const wordBoundaryRegex = new RegExp(`\\b${cleanTourOperator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
                 if (wordBoundaryRegex.test(cleanTextWithoutParens)) {
-                    console.log(`    ✅ Found word match: "${text}" for search "${searchTerm}"`);
-                    matches.push({ option, text, priority: 4, matchType: 'word-regex' });
+                    console.log(`    ✅ Found exact phrase match: "${text}" contains "${cleanTourOperator}"`);
+                    matches.push({ option, text, priority: 3, matchType: 'phrase-match' });
                     continue;
                 }
             }
