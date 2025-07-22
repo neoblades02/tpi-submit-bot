@@ -1523,10 +1523,32 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                     continue;
                 }
                 
-                // Check if ALL words from the tour operator are present as complete words (strict matching)
+                // Extract core company name (before any parentheses) for flexible matching
+                const inputCoreWords = cleanTourOperator.replace(/\([^)]*\)/g, '').trim().split(/\s+/).filter(word => word.length > 0);
+                const dropdownCoreWords = cleanTextWithoutParens.split(/\s+/).filter(word => word.length > 0);
+                
+                // Check if ALL core words from input are present in dropdown (ignoring parenthetical info)
+                const allCoreWordsPresent = inputCoreWords.length > 0 && inputCoreWords.every(word => {
+                    const wordRegex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                    const isPresent = wordRegex.test(cleanTextWithoutParens);
+                    
+                    if (!isPresent) {
+                        console.log(`    ❌ Core word "${word}" NOT found in "${cleanTextWithoutParens}"`);
+                    } else {
+                        console.log(`    ✅ Core word "${word}" found in "${cleanTextWithoutParens}"`);
+                    }
+                    return isPresent;
+                });
+                
+                if (allCoreWordsPresent) {
+                    console.log(`    ✅ CORE MATCH: "${text}" contains all ${inputCoreWords.length} core words from "${cleanTourOperator}" (ignoring parenthetical variations)`);
+                    matches.push({ option, text, priority: 2, matchType: 'core-words' });
+                    continue;
+                }
+                
+                // Fallback: Check if ALL input words are present (original strict logic)
                 const tourOperatorWords = cleanTourOperator.split(/\s+/).filter(word => word.length > 0);
                 const allWordsPresent = tourOperatorWords.every(word => {
-                    // Use word boundaries to ensure complete word matches (not just substrings)
                     const wordRegex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
                     const isPresent = wordRegex.test(cleanTextWithoutParens);
                     
@@ -1540,7 +1562,7 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 
                 if (allWordsPresent && tourOperatorWords.length > 0) {
                     console.log(`    ✅ STRICT MATCH: "${text}" contains all ${tourOperatorWords.length} required words from "${cleanTourOperator}"`);
-                    matches.push({ option, text, priority: 2, matchType: 'all-words' });
+                    matches.push({ option, text, priority: 3, matchType: 'all-words' });
                     continue;
                 } else if (tourOperatorWords.length > 0) {
                     console.log(`    ❌ REJECTED: "${text}" missing required words from "${cleanTourOperator}"`);
@@ -1554,7 +1576,7 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 const wordBoundaryRegex = new RegExp(`\\b${cleanTourOperator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
                 if (wordBoundaryRegex.test(cleanTextWithoutParens)) {
                     console.log(`    ✅ Found exact phrase match: "${text}" contains "${cleanTourOperator}"`);
-                    matches.push({ option, text, priority: 3, matchType: 'phrase-match' });
+                    matches.push({ option, text, priority: 4, matchType: 'phrase-match' });
                     continue;
                 }
             }
