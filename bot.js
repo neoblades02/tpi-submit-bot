@@ -6,19 +6,62 @@ async function loginAndProcess(data, options = {}) {
     let browser = null;
     try {
         console.log('Launching browser...');
-        browser = await chromium.launch({ 
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        });
+        
+        const maxRetries = 3;
+        
+        // Retry browser launch with increasing timeout
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                console.log(`Browser launch attempt ${attempt}/${maxRetries}...`);
+                const launchTimeout = 120000 + (attempt * 60000); // 120s, 180s, 240s
+                
+                browser = await chromium.launch({ 
+                    headless: true,
+                    timeout: launchTimeout,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--single-process',
+                        '--disable-gpu',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding'
+                    ]
+                });
+                
+                console.log(`✅ Browser launched successfully on attempt ${attempt}`);
+                break;
+                
+            } catch (error) {
+                console.log(`⚠️ Browser launch attempt ${attempt} failed: ${error.message}`);
+                
+                if (browser) {
+                    try {
+                        await browser.close();
+                    } catch (closeError) {
+                        console.log(`Warning: Error closing browser after failed launch: ${closeError.message}`);
+                    }
+                    browser = null;
+                }
+                
+                if (attempt === maxRetries) {
+                    throw new Error(`Failed to launch browser after ${maxRetries} attempts. Last error: ${error.message}`);
+                }
+                
+                // Wait before retry with exponential backoff
+                const waitTime = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
+                console.log(`Waiting ${waitTime}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+        }
+        
+        if (!browser) {
+            throw new Error('Browser launch failed - no browser instance created');
+        }
         const context = await browser.newContext();
         const page = await context.newPage();
 
@@ -2473,6 +2516,18 @@ function isBrowserTimeout(error) {
     return timeoutMessages.some(msg => error.message.includes(msg));
 }
 
+function isBrowserLaunchError(error) {
+    const launchErrorMessages = [
+        'browserType.launch: Timeout',
+        'Failed to launch',
+        'Could not start browser',
+        'Browser process crashed',
+        'ECONNREFUSED',
+        'spawn ENOENT'
+    ];
+    return launchErrorMessages.some(msg => error.message.includes(msg));
+}
+
 // Helper function to recover from browser crash or timeout
 async function recoverFromBrowserIssue(page, record, issueType, attempt = 1, maxAttempts = 2) {
     try {
@@ -2624,19 +2679,63 @@ async function sendToWebhook(processedData, jobErrors = []) {
 // New function to login once and create reusable session
 async function loginAndCreateSession() {
     console.log('🔑 Creating browser session with single login...');
-    const browser = await chromium.launch({ 
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
-        ]
-    });
+    
+    let browser = null;
+    const maxRetries = 3;
+    
+    // Retry browser launch with increasing timeout
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`Browser launch attempt ${attempt}/${maxRetries}...`);
+            const launchTimeout = 120000 + (attempt * 60000); // 120s, 180s, 240s
+            
+            browser = await chromium.launch({ 
+                headless: true,
+                timeout: launchTimeout,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding'
+                ]
+            });
+            
+            console.log(`✅ Browser launched successfully on attempt ${attempt}`);
+            break;
+            
+        } catch (error) {
+            console.log(`⚠️ Browser launch attempt ${attempt} failed: ${error.message}`);
+            
+            if (browser) {
+                try {
+                    await browser.close();
+                } catch (closeError) {
+                    console.log(`Warning: Error closing browser after failed launch: ${closeError.message}`);
+                }
+                browser = null;
+            }
+            
+            if (attempt === maxRetries) {
+                throw new Error(`Failed to launch browser after ${maxRetries} attempts. Last error: ${error.message}`);
+            }
+            
+            // Wait before retry with exponential backoff
+            const waitTime = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
+            console.log(`Waiting ${waitTime}ms before retry...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+    }
+    
+    if (!browser) {
+        throw new Error('Browser launch failed - no browser instance created');
+    }
     const context = await browser.newContext();
     const page = await context.newPage();
 

@@ -291,7 +291,44 @@ class JobManager extends EventEmitter {
                 message: 'Logging in to TPI Suitcase...'
             });
             
-            const session = await loginAndCreateSession();
+            let session = null;
+            try {
+                session = await loginAndCreateSession();
+            } catch (loginError) {
+                console.error('❌ Failed to create browser session:', loginError.message);
+                
+                // Check if it's specifically a browser launch timeout/error
+                const isBrowserLaunchIssue = loginError.message.includes('browserType.launch: Timeout') ||
+                                           loginError.message.includes('Failed to launch browser') ||
+                                           loginError.message.includes('Browser launch failed');
+                
+                if (isBrowserLaunchIssue) {
+                    job.errors.push({
+                        message: `Browser launch failed after retries: ${loginError.message}`,
+                        timestamp: new Date().toISOString(),
+                        context: 'browser_launch_failure',
+                        details: 'Consider increasing server resources or checking browser installation'
+                    });
+                    
+                    await this.sendStatusUpdate(job.id, {
+                        status: 'failed',
+                        message: 'Browser launch failed - this may be a resource or environment issue'
+                    });
+                } else {
+                    job.errors.push({
+                        message: `Login session creation failed: ${loginError.message}`,
+                        timestamp: new Date().toISOString(),
+                        context: 'login_session_failure'
+                    });
+                    
+                    await this.sendStatusUpdate(job.id, {
+                        status: 'failed',
+                        message: 'Could not establish session with TPI Suitcase'
+                    });
+                }
+                
+                throw loginError; // Re-throw to be caught by outer handler
+            }
             
             // Increment login count
             job.stats.loginCount++;
