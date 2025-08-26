@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { loginAndProcess } = require('./bot');
 const JobManager = require('./jobManager');
+const { discordNotifier } = require('./discordNotifier');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -67,6 +68,18 @@ app.post('/trigger-bot', async (req, res) => {
         res.status(200).json(result);
     } catch (error) {
         console.error('Error processing request:', error);
+        
+        // Send error notification to Discord
+        if (discordNotifier) {
+            await discordNotifier.sendErrorNotification(error, {
+                operation: 'sync_trigger_bot',
+                endpoint: '/trigger-bot',
+                timestamp: new Date().toISOString()
+            }).catch(notifyError => {
+                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+            });
+        }
+        
         res.status(500).send('An error occurred while processing the request.');
     }
 });
@@ -128,6 +141,18 @@ app.post('/trigger-bot-async', async (req, res) => {
 
     } catch (error) {
         console.error('Error creating async job:', error);
+        
+        // Send error notification to Discord
+        if (discordNotifier) {
+            await discordNotifier.sendErrorNotification(error, {
+                operation: 'async_trigger_bot',
+                endpoint: '/trigger-bot-async',
+                timestamp: new Date().toISOString()
+            }).catch(notifyError => {
+                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+            });
+        }
+        
         res.status(500).json({
             error: 'An error occurred while creating the job.',
             code: 'JOB_CREATION_ERROR'

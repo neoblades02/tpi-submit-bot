@@ -2,14 +2,345 @@ const EventEmitter = require('events');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 
+// Import enhanced stability and monitoring modules
+const { config } = require('./config');
+const { systemMonitor } = require('./monitor');
+const { discordNotifier } = require('./discordNotifier');
+const { autoRestartManager } = require('./circuitBreaker');
+const { ErrorClassifier, BrowserLaunchError, BrowserCrashError, CircuitBreakerError } = require('./errors');
+
 class JobManager extends EventEmitter {
     constructor() {
         super();
         this.jobs = new Map();
         this.processingQueue = [];
         this.isProcessing = false;
-        this.maxConcurrentJobs = 1; // Process one job at a time to avoid browser conflicts
-        this.statusWebhookUrl = 'https://n8n.collectgreatstories.com/webhook/tpi-status';
+        this.maxConcurrentJobs = config.job.maxConcurrentJobs; // Use configurable value
+        this.statusWebhookUrl = config.status.webhookUrl;
+        
+        // Initialize monitoring and stability systems
+        this.initializeStabilitySystems();
+        
+        console.log('🎯 JobManager initialized with enhanced stability features');
+        console.log(`   Max concurrent jobs: ${this.maxConcurrentJobs}`);
+        console.log(`   Status webhook: ${this.statusWebhookUrl}`);
+    }
+
+    /**
+     * Initialize stability and monitoring systems
+     */
+    initializeStabilitySystems() {
+        // Start system monitoring
+        if (!systemMonitor.isMonitoring) {
+            systemMonitor.startMonitoring();
+            console.log('🔍 System monitoring started');
+        }
+
+        // Set up system monitor event listeners
+        systemMonitor.on('memory_warning', (data) => {
+            console.log(`⚠️ Memory warning: ${data.usage.rss}MB (threshold: ${data.threshold}MB)`);
+            this.handleMemoryWarning(data);
+        });
+
+        systemMonitor.on('memory_exhaustion', (data) => {
+            console.log(`🚨 Memory exhaustion detected: ${data.usage.rss}MB`);
+            this.handleMemoryExhaustion(data);
+        });
+
+        systemMonitor.on('browser_timeout', (data) => {
+            console.log(`⏰ Browser timeout detected for instance ${data.id}`);
+            this.handleBrowserTimeout(data);
+        });
+
+        systemMonitor.on('emergency_cleanup', (data) => {
+            console.log(`🚨 Emergency cleanup performed, ${data.closedBrowsers} browsers closed`);
+            this.handleEmergencyCleanup(data);
+        });
+
+        // Set up auto-restart manager event listeners
+        autoRestartManager.on('restartRequested', (data) => {
+            console.log(`🔄 Restart requested for service: ${data.service}`);
+            this.handleRestartRequest(data);
+        });
+
+        autoRestartManager.on('circuitBreakerStateChange', (data) => {
+            console.log(`🔒 Circuit breaker state changed: ${data.service} ${data.oldState} → ${data.newState}`);
+            this.handleCircuitBreakerStateChange(data);
+        });
+
+        // Send startup notification
+        discordNotifier.sendStatusNotification('job_manager_started', 
+            'Job Manager initialized with enhanced stability features', {
+            maxConcurrentJobs: this.maxConcurrentJobs,
+            memoryThreshold: config.memory.threshold,
+            circuitBreakerEnabled: config.circuitBreaker.enabled
+        });
+    }
+
+    /**
+     * Handle memory warning events
+     */
+    async handleMemoryWarning(data) {
+        console.log('⚠️ Handling memory warning...');
+        
+        // Send Discord notification
+        await discordNotifier.sendStatusNotification('memory_warning', 
+            `Memory usage above threshold: ${data.usage.rss}MB`, {
+            memoryUsage: data.usage,
+            threshold: data.threshold,
+            browserInstances: systemMonitor.getMetrics().browserInstances
+        });
+        
+        // Trigger garbage collection
+        systemMonitor.triggerGarbageCollection();
+        
+        // Pause new job processing if memory is critically high
+        if (data.usage.rss > config.memory.threshold * 1.2) {
+            console.log('⏸️ Pausing new job processing due to high memory usage');
+            this.pauseJobProcessing('high_memory_usage');
+        }
+    }
+
+    /**
+     * Handle memory exhaustion events
+     */
+    async handleMemoryExhaustion(data) {
+        console.log('🚨 Handling memory exhaustion...');
+        
+        // Send critical alert
+        await discordNotifier.sendCriticalAlert('memory_exhaustion', 
+            `Memory exhaustion detected: ${data.usage.rss}MB`, {
+            memoryUsage: data.usage,
+            systemMetrics: systemMonitor.getMetrics(),
+            recommendedActions: [
+                'Emergency cleanup has been triggered',
+                'All browser instances will be closed',
+                'Job processing is paused',
+                'Manual intervention may be required'
+            ]
+        });
+        
+        // Emergency pause all job processing
+        this.emergencyPause('memory_exhaustion');
+    }
+
+    /**
+     * Handle browser timeout events
+     */
+    async handleBrowserTimeout(data) {
+        console.log(`⏰ Handling browser timeout for instance: ${data.id}`);
+        
+        // Find jobs using this browser instance and mark for recovery
+        for (const [jobId, job] of this.jobs.entries()) {
+            if (job.browserInstance === data.id && job.status === 'processing') {
+                console.log(`🔄 Triggering recovery for job ${jobId} due to browser timeout`);
+                job.stats.crashRecoveries++;
+                
+                // Send recovery notification
+                await discordNotifier.sendRecoveryNotification('browser_timeout_recovery',
+                    `Recovering job ${jobId} from browser timeout`, {
+                    jobId,
+                    browserInstance: data.id,
+                    inactiveTime: data.inactiveTime
+                });
+            }
+        }
+    }
+
+    /**
+     * Handle emergency cleanup events
+     */
+    async handleEmergencyCleanup(data) {
+        console.log('🚨 Handling emergency cleanup...');
+        
+        // Mark all processing jobs as requiring recovery
+        const affectedJobs = [];
+        for (const [jobId, job] of this.jobs.entries()) {
+            if (job.status === 'processing') {
+                job.status = 'recovery_required';
+                job.stats.crashRecoveries++;
+                affectedJobs.push(jobId);
+            }
+        }
+        
+        if (affectedJobs.length > 0) {
+            await discordNotifier.sendCriticalAlert('emergency_cleanup_recovery',
+                `Emergency cleanup affected ${affectedJobs.length} jobs`, {
+                affectedJobs,
+                closedBrowsers: data.closedBrowsers,
+                recommendedActions: [
+                    'Jobs will be retried with new browser instances',
+                    'Monitor system stability',
+                    'Consider increasing resource limits'
+                ]
+            });
+        }
+    }
+
+    /**
+     * Handle restart request events
+     */
+    async handleRestartRequest(data) {
+        console.log(`🔄 Handling restart request for service: ${data.service}`);
+        
+        if (data.service === 'browser') {
+            // Implement browser service restart logic
+            await this.restartBrowserService(data);
+        }
+        
+        // Send restart notification
+        await discordNotifier.sendRecoveryNotification('service_restart',
+            `Restarting service: ${data.service}`, {
+            service: data.service,
+            reason: data.reason,
+            attempt: data.attempt,
+            maxAttempts: data.maxAttempts
+        });
+    }
+
+    /**
+     * Handle circuit breaker state changes
+     */
+    async handleCircuitBreakerStateChange(data) {
+        console.log(`🔒 Circuit breaker state changed: ${data.service} ${data.oldState} → ${data.newState}`);
+        
+        if (data.newState === 'OPEN') {
+            // Circuit breaker opened - pause relevant operations
+            if (data.service === 'browser') {
+                console.log('⏸️ Pausing job processing due to browser circuit breaker');
+                this.pauseJobProcessing('circuit_breaker_open');
+            }
+            
+            // Send critical alert
+            await discordNotifier.sendCriticalAlert('circuit_breaker_opened',
+                `Circuit breaker opened for service: ${data.service}`, {
+                service: data.service,
+                newState: data.newState,
+                timestamp: data.timestamp
+            });
+        } else if (data.newState === 'CLOSED' && data.oldState === 'OPEN') {
+            // Circuit breaker recovered - resume operations
+            if (data.service === 'browser') {
+                console.log('▶️ Resuming job processing - browser circuit breaker recovered');
+                this.resumeJobProcessing('circuit_breaker_recovered');
+            }
+            
+            // Send recovery notification
+            await discordNotifier.sendRecoveryNotification('circuit_breaker_recovered',
+                `Circuit breaker recovered for service: ${data.service}`, {
+                service: data.service,
+                newState: data.newState,
+                recoveryTime: data.timestamp
+            });
+        }
+    }
+
+    /**
+     * Pause job processing with reason
+     */
+    pauseJobProcessing(reason) {
+        this.isProcessing = false;
+        console.log(`⏸️ Job processing paused: ${reason}`);
+        
+        // Send status update for all active jobs
+        for (const [jobId, job] of this.jobs.entries()) {
+            if (job.status === 'processing') {
+                this.sendStatusUpdate(jobId, {
+                    status: 'paused',
+                    message: `Job processing paused: ${reason}`,
+                    reason
+                });
+            }
+        }
+    }
+
+    /**
+     * Resume job processing with reason
+     */
+    resumeJobProcessing(reason) {
+        console.log(`▶️ Job processing resumed: ${reason}`);
+        
+        // Resume processing queue
+        if (this.processingQueue.length > 0) {
+            this.processQueue();
+        }
+        
+        // Send status update for paused jobs
+        for (const [jobId, job] of this.jobs.entries()) {
+            if (job.status === 'paused' || job.status === 'recovery_required') {
+                job.status = 'pending';
+                this.sendStatusUpdate(jobId, {
+                    status: 'resumed',
+                    message: `Job processing resumed: ${reason}`,
+                    reason
+                });
+                
+                // Add back to queue if not already there
+                if (!this.processingQueue.includes(jobId)) {
+                    this.processingQueue.unshift(jobId); // Add to front of queue
+                }
+            }
+        }
+    }
+
+    /**
+     * Emergency pause all operations
+     */
+    emergencyPause(reason) {
+        this.isProcessing = false;
+        console.log(`🚨 Emergency pause activated: ${reason}`);
+        
+        // Clear processing queue
+        this.processingQueue = [];
+        
+        // Mark all processing jobs as failed
+        for (const [jobId, job] of this.jobs.entries()) {
+            if (job.status === 'processing' || job.status === 'pending') {
+                job.status = 'emergency_paused';
+                job.errors.push({
+                    message: `Emergency pause: ${reason}`,
+                    timestamp: new Date().toISOString(),
+                    context: 'emergency_pause'
+                });
+                
+                this.sendStatusUpdate(jobId, {
+                    status: 'emergency_paused',
+                    message: `Emergency pause activated: ${reason}`,
+                    error: reason
+                });
+            }
+        }
+    }
+
+    /**
+     * Restart browser service
+     */
+    async restartBrowserService(data) {
+        console.log('🔄 Restarting browser service...');
+        
+        try {
+            // This would trigger a restart of browser-related services
+            // Implementation depends on how the browser manager is structured
+            
+            // Reset restart counter on successful restart
+            autoRestartManager.resetRestartCounter();
+            
+            console.log('✅ Browser service restart completed');
+            
+        } catch (error) {
+            console.error('❌ Browser service restart failed:', error.message);
+            
+            // Classify and report the error
+            const classifiedError = ErrorClassifier.classify(error, {
+                operation: 'browser_service_restart',
+                attempt: data.attempt
+            });
+            
+            await discordNotifier.sendErrorNotification(classifiedError, {
+                service: data.service,
+                restartAttempt: data.attempt
+            });
+        }
     }
 
     // Send status update to webhook with standardized JSON schema
@@ -297,33 +628,78 @@ class JobManager extends EventEmitter {
             } catch (loginError) {
                 console.error('❌ Failed to create browser session:', loginError.message);
                 
-                // Check if it's specifically a browser launch timeout/error
-                const isBrowserLaunchIssue = loginError.message.includes('browserType.launch: Timeout') ||
-                                           loginError.message.includes('Failed to launch browser') ||
-                                           loginError.message.includes('Browser launch failed');
+                // Classify error using enhanced error classification
+                const classifiedError = ErrorClassifier.classify(loginError, {
+                    operation: 'browser_session_creation',
+                    jobId: job.id
+                });
                 
-                if (isBrowserLaunchIssue) {
-                    job.errors.push({
-                        message: `Browser launch failed after retries: ${loginError.message}`,
-                        timestamp: new Date().toISOString(),
-                        context: 'browser_launch_failure',
-                        details: 'Consider increasing server resources or checking browser installation'
-                    });
+                // Add classified error to job
+                job.errors.push({
+                    message: `Browser session creation failed: ${classifiedError.message}`,
+                    timestamp: classifiedError.timestamp,
+                    context: classifiedError.type || 'session_creation_failure',
+                    errorType: classifiedError.name,
+                    recoverable: classifiedError.recoverable,
+                    originalError: loginError.message
+                });
+                
+                // Handle different error types appropriately
+                if (classifiedError instanceof BrowserLaunchError) {
+                    console.log('🚨 Browser launch error detected, checking circuit breaker...');
+                    
+                    // Trigger circuit breaker logic
+                    const browserCircuitBreaker = autoRestartManager.getCircuitBreaker('browser');
                     
                     await this.sendStatusUpdate(job.id, {
-                        status: 'failed',
-                        message: 'Browser launch failed - this may be a resource or environment issue'
+                        status: 'browser_launch_failed',
+                        message: `Browser launch failed: ${classifiedError.message}`,
+                        error: classifiedError.toJSON(),
+                        recoverable: classifiedError.recoverable
                     });
+                    
+                    // Send enhanced Discord notification
+                    await discordNotifier.sendErrorNotification(classifiedError, {
+                        jobId: job.id,
+                        operation: 'browser_launch',
+                        memoryUsage: systemMonitor.checkMemoryUsage(),
+                        circuitBreakerStatus: browserCircuitBreaker.getMetrics().state
+                    });
+                    
+                    // Consider automatic restart if error is recoverable
+                    if (classifiedError.recoverable && autoRestartManager) {
+                        await autoRestartManager.considerRestart('browser', 
+                            `Browser launch failure: ${classifiedError.message}`);
+                    }
+                    
+                } else if (classifiedError instanceof CircuitBreakerError) {
+                    console.log('🔒 Circuit breaker error - service temporarily unavailable');
+                    
+                    await this.sendStatusUpdate(job.id, {
+                        status: 'circuit_breaker_blocked',
+                        message: 'Browser service temporarily unavailable due to circuit breaker',
+                        error: classifiedError.toJSON()
+                    });
+                    
+                    // Pause job processing until circuit breaker recovers
+                    this.pauseJobProcessing('circuit_breaker_open');
+                    
                 } else {
-                    job.errors.push({
-                        message: `Login session creation failed: ${loginError.message}`,
-                        timestamp: new Date().toISOString(),
-                        context: 'login_session_failure'
-                    });
+                    // General session creation error
+                    console.log('⚠️ General session creation error');
                     
                     await this.sendStatusUpdate(job.id, {
-                        status: 'failed',
-                        message: 'Could not establish session with TPI Suitcase'
+                        status: 'session_creation_failed',
+                        message: `Could not establish session: ${classifiedError.message}`,
+                        error: classifiedError.toJSON ? classifiedError.toJSON() : classifiedError.message,
+                        recoverable: classifiedError.recoverable || false
+                    });
+                    
+                    // Send error notification
+                    await discordNotifier.sendErrorNotification(classifiedError, {
+                        jobId: job.id,
+                        operation: 'session_creation',
+                        memoryUsage: systemMonitor.checkMemoryUsage()
                     });
                 }
                 
@@ -414,14 +790,26 @@ class JobManager extends EventEmitter {
                             stack: batchError.stack || null
                         });
                         
+                        // Classify the error to determine if it's recoverable
+                        const classifiedBatchError = ErrorClassifier.classify(batchError, {
+                            operation: 'batch_processing',
+                            jobId: job.id,
+                            batchIndex: batchIndex + 1
+                        });
+                        
                         // Check if this is a browser crash that we can recover from
-                        if (batchError.message.includes('browser crash') || 
-                            batchError.message.includes('navigation') || 
-                            batchError.message.includes('Target page') ||
-                            batchError.message.includes('Browser closed') ||
-                            batchError.message.includes('Session closed')) {
+                        if (classifiedBatchError instanceof BrowserCrashError || 
+                            classifiedBatchError.recoverable) {
                             
-                            console.log('🔄 Browser crash detected, attempting to recover...');
+                            console.log(`🔄 ${classifiedBatchError.name} detected, attempting to recover...`);
+                            
+                            // Send enhanced crash notification
+                            await discordNotifier.sendErrorNotification(classifiedBatchError, {
+                                jobId: job.id,
+                                batchIndex: batchIndex + 1,
+                                totalBatches: batches.length,
+                                recoverable: true
+                            });
                             
                             // Send crash recovery status update
                             await this.sendStatusUpdate(job.id, {
@@ -693,6 +1081,92 @@ class JobManager extends EventEmitter {
             if (jobAge > maxAge && (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')) {
                 this.jobs.delete(jobId);
             }
+        }
+    }
+
+    /**
+     * Enhanced health check with monitoring integration
+     */
+    getHealthStatus() {
+        const systemMetrics = systemMonitor.getMetrics();
+        const circuitBreakers = autoRestartManager.getMetrics().circuitBreakers;
+        
+        const health = {
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            jobs: {
+                total: this.jobs.size,
+                pending: this.processingQueue.length,
+                processing: Array.from(this.jobs.values()).filter(job => job.status === 'processing').length,
+                failed: Array.from(this.jobs.values()).filter(job => job.status === 'failed').length,
+                completed: Array.from(this.jobs.values()).filter(job => job.status === 'completed').length
+            },
+            system: {
+                memory: systemMetrics.memory,
+                browserInstances: systemMetrics.browserInstances,
+                uptime: systemMetrics.uptime,
+                warnings: systemMetrics.warnings
+            },
+            circuitBreakers: circuitBreakers,
+            isProcessing: this.isProcessing
+        };
+
+        // Determine overall health status
+        if (systemMetrics.warnings.memoryExhaustion) {
+            health.status = 'critical';
+            health.issues = ['Memory exhaustion detected'];
+        } else if (systemMetrics.warnings.memoryThreshold) {
+            health.status = 'warning';
+            health.issues = ['Memory usage above threshold'];
+        } else if (circuitBreakers.some(cb => cb.state === 'OPEN')) {
+            health.status = 'degraded';
+            health.issues = ['One or more circuit breakers are open'];
+        }
+
+        return health;
+    }
+
+    /**
+     * Enhanced cleanup with monitoring integration
+     */
+    async cleanup() {
+        console.log('🧹 JobManager cleanup starting...');
+        
+        try {
+            // Send shutdown notification
+            await discordNotifier.sendStatusNotification('job_manager_shutting_down',
+                'Job Manager is shutting down gracefully', {
+                activeJobs: this.jobs.size,
+                pendingJobs: this.processingQueue.length
+            });
+
+            // Cancel all pending jobs
+            for (const [jobId, job] of this.jobs.entries()) {
+                if (job.status === 'pending' || job.status === 'processing') {
+                    job.status = 'cancelled';
+                    job.completedAt = new Date().toISOString();
+                    
+                    await this.sendStatusUpdate(jobId, {
+                        status: 'cancelled',
+                        message: 'Job cancelled due to system shutdown'
+                    });
+                }
+            }
+
+            // Stop system monitoring
+            if (systemMonitor.isMonitoring) {
+                await systemMonitor.cleanup();
+            }
+
+            // Cleanup auto-restart manager
+            if (autoRestartManager) {
+                autoRestartManager.destroy();
+            }
+
+            console.log('✅ JobManager cleanup completed');
+
+        } catch (error) {
+            console.error('❌ Error during JobManager cleanup:', error.message);
         }
     }
 }

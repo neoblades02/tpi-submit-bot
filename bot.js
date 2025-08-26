@@ -1,96 +1,115 @@
 require('dotenv').config();
-const { chromium } = require('playwright');
 const axios = require('axios');
+
+// Import stability and monitoring modules
+const { config } = require('./config');
+const { systemMonitor } = require('./monitor');
+const { browserManager } = require('./browserManager');
+const { discordNotifier } = require('./discordNotifier');
+const { ErrorClassifier } = require('./errors');
 
 async function loginAndProcess(data, options = {}) {
     let browser = null;
+    let sessionId = null;
+    
     try {
         console.log('Launching browser...');
         
-        const maxRetries = 3;
+        // Launch browser using browser manager to get sessionId
+        const launchResult = await browserManager.launchBrowser();
+        browser = launchResult.browser;
+        sessionId = launchResult.sessionId;
         
-        // Retry browser launch with increasing timeout
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                console.log(`Browser launch attempt ${attempt}/${maxRetries}...`);
-                const launchTimeout = 120000 + (attempt * 60000); // 120s, 180s, 240s
-                
-                browser = await chromium.launch({ 
-                    headless: true,
-                    timeout: launchTimeout,
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--no-first-run',
-                        '--no-zygote',
-                        '--single-process',
-                        '--disable-gpu',
-                        '--disable-background-timer-throttling',
-                        '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding'
-                    ]
-                });
-                
-                console.log(`✅ Browser launched successfully on attempt ${attempt}`);
-                break;
-                
-            } catch (error) {
-                console.log(`⚠️ Browser launch attempt ${attempt} failed: ${error.message}`);
-                
-                if (browser) {
-                    try {
-                        await browser.close();
-                    } catch (closeError) {
-                        console.log(`Warning: Error closing browser after failed launch: ${closeError.message}`);
-                    }
-                    browser = null;
-                }
-                
-                if (attempt === maxRetries) {
-                    throw new Error(`Failed to launch browser after ${maxRetries} attempts. Last error: ${error.message}`);
-                }
-                
-                // Wait before retry with exponential backoff
-                const waitTime = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
-                console.log(`Waiting ${waitTime}ms before retry...`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
-            }
-        }
+        console.log(`✅ Browser launched with session ID: ${sessionId}`);
         
-        if (!browser) {
-            throw new Error('Browser launch failed - no browser instance created');
-        }
-        const context = await browser.newContext();
-        const page = await context.newPage();
+        // Update browser activity
+        systemMonitor.updateBrowserActivity(sessionId, { status: 'creating_context' });
+        
+        // Create context and page with error handling
+        let context, page;
+        try {
+            context = await browser.newContext({
+                // Enhanced context options for stability
+                userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport: { width: 1920, height: 1080 },
+                ignoreHTTPSErrors: true,
+                bypassCSP: true
+            });
+            
+            page = await context.newPage();
+            
+            // Add error handlers for page crashes
+            page.on('crash', () => {
+                console.log(`💥 Page crash detected for session ${sessionId}`);
+                browserManager.handleBrowserCrash(sessionId, new Error('Page crashed during session'));
+            });
+            
+            page.on('pageerror', (error) => {
+                console.log(`⚠️ Page error for session ${sessionId}: ${error.message}`);
+            });
 
-        console.log('Navigating to login page...');
+        } catch (error) {
+            console.error('❌ Failed to create browser context or page:', error.message);
+            await browserManager.closeBrowser(sessionId, 'context_creation_failed');
+            throw ErrorClassifier.classify(error, { operation: 'context_creation', sessionId });
+        }
+
+        // Update browser activity
+        systemMonitor.updateBrowserActivity(sessionId, { 
+            status: 'navigating_to_login',
+            pages: 1
+        });
+
+
+        console.log('🌐 Navigating to login page...');
         
-        // Retry logic for initial page load
+        // Enhanced page navigation with retries
         let pageLoaded = false;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        const maxNavigationRetries = 3;
+        
+        for (let attempt = 1; attempt <= maxNavigationRetries; attempt++) {
             try {
-                console.log(`Page load attempt ${attempt}/3...`);
-                await page.goto('https://my.tpisuitcase.com/', { 
-                    timeout: 60000,
-                    waitUntil: 'networkidle' 
+                console.log(`📄 Page load attempt ${attempt}/${maxNavigationRetries} for session ${sessionId}...`);
+                
+                await page.goto(config.tpi.baseUrl, { 
+                    timeout: config.browser.navigationTimeout,
+                    waitUntil: 'networkidle'
                 });
+                
                 pageLoaded = true;
-                console.log('✅ Page loaded successfully');
+                console.log(`✅ Page loaded successfully on attempt ${attempt}`);
                 break;
+                
             } catch (error) {
+                const classifiedError = ErrorClassifier.classify(error, {
+                    attempt,
+                    maxAttempts: maxNavigationRetries,
+                    operation: 'page_navigation',
+                    url: config.tpi.baseUrl,
+                    sessionId
+                });
+                
                 console.log(`⚠️ Page load attempt ${attempt} failed: ${error.message}`);
-                if (attempt === 3) {
-                    throw new Error(`Failed to load page after 3 attempts: ${error.message}`);
+                
+                if (attempt === maxNavigationRetries) {
+                    await browserManager.closeBrowser(sessionId, 'navigation_failed');
+                    throw classifiedError;
                 }
-                await page.waitForTimeout(2000); // Wait before retry
+                
+                // Progressive delay between retries
+                const delay = 2000 * attempt;
+                console.log(`⏳ Waiting ${delay}ms before navigation retry...`);
+                await page.waitForTimeout(delay);
             }
         }
         
         if (!pageLoaded) {
-            throw new Error('Could not load TPI Suitcase login page');
+            await browserManager.closeBrowser(sessionId, 'navigation_timeout');
+            throw new Error('Could not load TPI Suitcase login page after all attempts');
         }
+
+        // Update browser activity
+        systemMonitor.updateBrowserActivity(sessionId, { status: 'performing_login' });
 
         console.log('Waiting for iframe...');
         // Wait for the iframe to be present and visible
@@ -682,10 +701,28 @@ async function loginAndProcess(data, options = {}) {
 
     } catch (error) {
         console.error('An error occurred during the bot process:', error);
-        throw error;
+        
+        // Classify the error for better handling
+        const classifiedError = ErrorClassifier.classify(error, {
+            operation: 'bot_process',
+            sessionId: sessionId
+        });
+        
+        // Send error notification to Discord
+        if (discordNotifier) {
+            await discordNotifier.sendErrorNotification(classifiedError, {
+                operation: 'loginAndProcess',
+                sessionId: sessionId,
+                timestamp: new Date().toISOString()
+            }).catch(notifyError => {
+                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+            });
+        }
+        
+        throw classifiedError;
     } finally {
-        if (browser) {
-            await browser.close();
+        if (sessionId) {
+            await browserManager.closeBrowser(sessionId, 'function_completed');
             console.log('Browser closed.');
         }
     }
@@ -1568,7 +1605,6 @@ async function searchAndSelectTourOperator(page, tourOperator) {
                 
                 // Extract core company name (before any parentheses) for flexible matching
                 const inputCoreWords = cleanTourOperator.replace(/\([^)]*\)/g, '').trim().split(/\s+/).filter(word => word.length > 0);
-                const dropdownCoreWords = cleanTextWithoutParens.split(/\s+/).filter(word => word.length > 0);
                 
                 // Check if ALL core words from input are present in dropdown (ignoring parenthetical info)
                 const allCoreWordsPresent = inputCoreWords.length > 0 && inputCoreWords.every(word => {
@@ -2279,7 +2315,6 @@ async function verifyFormState(page, expectedFormState) {
         // Close any interfering popups before verification
         await closeCalendarPopupIfOpen(page);
         
-        let validationPassed = true;
         let mismatchCount = 0;
         
         // Check reservation title
@@ -2516,17 +2551,6 @@ function isBrowserTimeout(error) {
     return timeoutMessages.some(msg => error.message.includes(msg));
 }
 
-function isBrowserLaunchError(error) {
-    const launchErrorMessages = [
-        'browserType.launch: Timeout',
-        'Failed to launch',
-        'Could not start browser',
-        'Browser process crashed',
-        'ECONNREFUSED',
-        'spawn ENOENT'
-    ];
-    return launchErrorMessages.some(msg => error.message.includes(msg));
-}
 
 // Helper function to recover from browser crash or timeout
 async function recoverFromBrowserIssue(page, record, issueType, attempt = 1, maxAttempts = 2) {
@@ -2678,66 +2702,20 @@ async function sendToWebhook(processedData, jobErrors = []) {
 
 // New function to login once and create reusable session
 async function loginAndCreateSession() {
-    console.log('🔑 Creating browser session with single login...');
+    console.log('🔑 Creating enhanced browser session with stability features...');
     
-    let browser = null;
-    const maxRetries = 3;
-    
-    // Retry browser launch with increasing timeout
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            console.log(`Browser launch attempt ${attempt}/${maxRetries}...`);
-            const launchTimeout = 120000 + (attempt * 60000); // 120s, 180s, 240s
-            
-            browser = await chromium.launch({ 
-                headless: true,
-                timeout: launchTimeout,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-gpu',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding'
-                ]
-            });
-            
-            console.log(`✅ Browser launched successfully on attempt ${attempt}`);
-            break;
-            
-        } catch (error) {
-            console.log(`⚠️ Browser launch attempt ${attempt} failed: ${error.message}`);
-            
-            if (browser) {
-                try {
-                    await browser.close();
-                } catch (closeError) {
-                    console.log(`Warning: Error closing browser after failed launch: ${closeError.message}`);
-                }
-                browser = null;
-            }
-            
-            if (attempt === maxRetries) {
-                throw new Error(`Failed to launch browser after ${maxRetries} attempts. Last error: ${error.message}`);
-            }
-            
-            // Wait before retry with exponential backoff
-            const waitTime = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
-            console.log(`Waiting ${waitTime}ms before retry...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
+    try {
+        // Start system monitoring if not already started
+        if (!systemMonitor.isMonitoring) {
+            systemMonitor.startMonitoring();
         }
-    }
+
+        // Launch browser using enhanced browser manager
+        const { browser, sessionId, launchTime } = await browserManager.launchBrowser();
+        console.log(`🚀 Browser launched successfully (${launchTime}ms) - Session ID: ${sessionId}`);
     
-    if (!browser) {
-        throw new Error('Browser launch failed - no browser instance created');
-    }
-    const context = await browser.newContext();
-    const page = await context.newPage();
+        const context = await browser.newContext();
+        const page = await context.newPage();
 
     console.log('Navigating to login page...');
     
@@ -2821,6 +2799,37 @@ async function loginAndCreateSession() {
         context: context,
         page: page
     };
+    
+    } catch (error) {
+        console.error('❌ Login and session creation failed:', error.message);
+        
+        // Classify the error for better handling
+        const classifiedError = ErrorClassifier.classify(error, {
+            operation: 'login_and_session_creation'
+        });
+        
+        // Send error notification if discord notifier is available
+        if (discordNotifier) {
+            await discordNotifier.sendErrorNotification(classifiedError, {
+                operation: 'loginAndCreateSession',
+                timestamp: new Date().toISOString()
+            }).catch(notifyError => {
+                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+            });
+        }
+        
+        // Clean up any partial browser session
+        try {
+            if (browser) {
+                await browser.close();
+                console.log('🔐 Cleaned up browser after login failure');
+            }
+        } catch (cleanupError) {
+            console.log('⚠️ Error during browser cleanup:', cleanupError.message);
+        }
+        
+        throw classifiedError;
+    }
 }
 
 // Helper function to send individual record errors to status webhook
