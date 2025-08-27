@@ -104,7 +104,7 @@ class BrowserManager {
                 await this.preLaunchCleanup();
 
                 // Check system memory usage before launching browser
-                await this.checkMemoryUsage();
+                systemMonitor.checkMemoryUsage();
 
                 // Check memory again before each attempt using systemMonitor
                 const memoryBefore = systemMonitor.checkMemoryUsage();
