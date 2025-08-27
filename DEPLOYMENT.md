@@ -31,7 +31,7 @@ npm install
 npm run dev
 
 # Test the API
-curl -X POST -H "Content-Type: application/json" -d @sample.json http://localhost:3000/trigger-bot
+curl -X POST -H "Content-Type: application/json" -d @sample.json http://localhost:3001/trigger-bot
 ```
 
 ### 3. Docker Deployment
@@ -70,7 +70,7 @@ docker build -t tpi-submit-bot .
 # Run with environment variables
 docker run -d \
   --name tpi-submit-bot \
-  -p 3000:3000 \
+  -p 3001:3001 \
   -e USERNAME=your_username \
   -e PASSWORD=your_password \
   -e NODE_ENV=production \

@@ -3,9 +3,10 @@ const express = require('express');
 const { loginAndProcess } = require('./bot');
 const JobManager = require('./jobManager');
 const { discordNotifier } = require('./discordNotifier');
+const { config } = require('./config');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = config.server.port;
 const jobManager = new JobManager();
 
 app.use(express.json({ limit: '50mb' }));

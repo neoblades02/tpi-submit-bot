@@ -24,14 +24,14 @@ RUN chown -R appuser:appuser /usr/src/app
 USER appuser
 
 # Expose the port the app runs on
-EXPOSE 3000
+EXPOSE 3001
 
 # Set environment for production
 ENV NODE_ENV=production
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:3001/health || exit 1
 
 # Run the web service on container startup
 CMD ["node", "index.js"]

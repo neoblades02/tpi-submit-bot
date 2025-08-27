@@ -104,7 +104,7 @@ To start the API server locally:
 npm start
 ```
 
-The server will be running at `http://localhost:3000`.
+The server will be running at `http://localhost:3001`.
 
 ### 3. Triggering the Bot
 
@@ -239,10 +239,10 @@ Returns immediately with job tracking information:
 **Then monitor progress:**
 ```bash
 # Check progress
-curl http://localhost:3000/job/{JOB_ID}/progress
+curl http://localhost:3001/job/{JOB_ID}/progress
 
 # Get results when completed
-curl http://localhost:3000/job/{JOB_ID}/results
+curl http://localhost:3001/job/{JOB_ID}/results
 ```
 
 ### Status Values
@@ -348,7 +348,7 @@ The bot also sends comprehensive status updates throughout job processing:
 2.  **Run the Docker container:**
     Make sure to pass the `.env` file to the container so it can access the credentials.
     ```bash
-    docker run --env-file ./.env -p 3000:3000 -d tpi-submit-bot
+    docker run --env-file ./.env -p 3001:3001 -d tpi-submit-bot
     ```
 
 ### Deploying to Google Cloud Run
@@ -384,18 +384,18 @@ Coolify can deploy this project directly from your Git repository.
 
 #### Synchronous Processing:
 ```bash
-curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3000/trigger-bot
+curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3001/trigger-bot
 ```
 
 #### Asynchronous Processing (Recommended for large datasets):
 ```bash
-curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3000/trigger-bot-async
+curl -X POST -H "Content-Type: application/json" --data-binary "@sample.json" http://localhost:3001/trigger-bot-async
 ```
 
 #### n8n Integration Example:
 Use these settings in your n8n HTTP Request node:
 - **Method**: POST
-- **URL**: `http://localhost:3000/trigger-bot-async`
+- **URL**: `http://localhost:3001/trigger-bot-async`
 - **Authentication**: None
 - **Send Headers**: Enable
 - **Send Body**: Enable
@@ -409,7 +409,7 @@ Use these settings in your n8n HTTP Request node:
 
 **Correct n8n Configuration:**
 1. **Method**: POST
-2. **URL**: `http://localhost:3000/trigger-bot-async`
+2. **URL**: `http://localhost:3001/trigger-bot-async`
 3. **Body Content Type**: JSON
 4. **Specify Body**: Using Fields Below
 5. **Body Parameters**: 
@@ -451,7 +451,7 @@ If using "Specify Body: JSON", use:
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '[{"rows":[{"Agent Name":"Alex Harmeyer","Client Name":"Donna Duquaine","Trip Description":"Donna Duquaine | Location TBD | Month TBD","Booking Number":"35090693","Booking Status":"Cancelled","Booking Description":"Palacio de los Duques Madrid","Tour Operator":"Rate Hawk","Booking Date":"06/02/2025","Booking Start Date":"09/01/2025","Booking End Date":"09/12/2025","Package Price":"1,776.00","Commission Projected":"177.56"}]}]' \
-  http://localhost:3000/trigger-bot-async
+  http://localhost:3001/trigger-bot-async
 ```
 
 ### New API Endpoints

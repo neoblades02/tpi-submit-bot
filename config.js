@@ -42,7 +42,7 @@ function parseArrayEnv(envVar, defaultValue = []) {
 const config = {
     // Server Configuration
     server: {
-        port: parseIntEnv('PORT', 3000),
+        port: parseIntEnv('PORT', 3001),
         nodeEnv: process.env.NODE_ENV || 'production',
         logLevel: process.env.LOG_LEVEL || 'info'
     },
