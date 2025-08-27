@@ -146,6 +146,34 @@ class ResourceExhaustionError extends Error {
     }
 }
 
+class BrowserSessionTerminatedError extends Error {
+    constructor(message, terminalReason = 'unknown', sessionId = null, originalError = null) {
+        super(message);
+        this.name = 'BrowserSessionTerminatedError';
+        this.type = 'browser_session_terminated';
+        this.terminalReason = terminalReason;
+        this.sessionId = sessionId;
+        this.originalError = originalError;
+        this.timestamp = new Date().toISOString();
+        this.recoverable = terminalReason !== 'manual_close' && terminalReason !== 'process_killed';
+        
+        Error.captureStackTrace(this, BrowserSessionTerminatedError);
+    }
+
+    toJSON() {
+        return {
+            name: this.name,
+            message: this.message,
+            type: this.type,
+            terminalReason: this.terminalReason,
+            sessionId: this.sessionId,
+            recoverable: this.recoverable,
+            timestamp: this.timestamp,
+            originalError: this.originalError ? this.originalError.message : null
+        };
+    }
+}
+
 class CircuitBreakerError extends Error {
     constructor(message, service = 'browser', failureCount = 0, threshold = 5) {
         super(message);
@@ -192,6 +220,12 @@ class ErrorClassifier {
         if (this.isBrowserTimeoutError(message)) {
             const timeout = this.extractTimeout(message);
             return new BrowserTimeoutError(message, timeout, operation, error);
+        }
+
+        // Browser session termination errors (more specific than crash errors)
+        if (this.isBrowserSessionTerminatedError(message)) {
+            const terminalReason = this.determineTerminationReason(message);
+            return new BrowserSessionTerminatedError(message, terminalReason, context.sessionId, error);
         }
 
         // Browser crash errors
@@ -274,6 +308,67 @@ class ErrorClassifier {
         return patterns.some(pattern => pattern.test(message));
     }
 
+    static isBrowserSessionTerminatedError(message) {
+        const patterns = [
+            /target page, context or browser has been closed/i,
+            /page closed/i,
+            /browser has been closed/i,
+            /execution context was destroyed/i,
+            /session.*closed/i,
+            /browser.*disconnected/i,
+            /protocol error.*target closed/i,
+            /websocket connection.*closed/i,
+            /browser instance.*terminated/i,
+            /context.*destroyed/i,
+            /page.*detached/i,
+            /connection.*terminated/i
+        ];
+        return patterns.some(pattern => pattern.test(message));
+    }
+
+    static determineTerminationReason(message) {
+        const reasonPatterns = {
+            'race_condition': [
+                /target page, context or browser has been closed/i,
+                /execution context was destroyed/i
+            ],
+            'manual_close': [
+                /browser.*close.*manually/i,
+                /session.*terminated.*by.*user/i
+            ],
+            'process_killed': [
+                /process.*killed/i,
+                /sigterm/i,
+                /sigkill/i
+            ],
+            'network_disconnection': [
+                /websocket connection.*closed/i,
+                /connection.*terminated/i,
+                /browser.*disconnected/i
+            ],
+            'context_destroyed': [
+                /context.*destroyed/i,
+                /execution context was destroyed/i
+            ],
+            'page_detached': [
+                /page.*detached/i,
+                /target.*detached/i
+            ],
+            'browser_crash': [
+                /browser.*crash/i,
+                /unexpected.*termination/i
+            ]
+        };
+
+        for (const [reason, patterns] of Object.entries(reasonPatterns)) {
+            if (patterns.some(pattern => pattern.test(message))) {
+                return reason;
+            }
+        }
+
+        return 'unknown';
+    }
+
     static extractTimeout(message) {
         const timeoutMatch = message.match(/Timeout\s*(\d+)(?:ms)?/i);
         return timeoutMatch ? parseInt(timeoutMatch[1]) : 0;
@@ -284,6 +379,7 @@ module.exports = {
     BrowserLaunchError,
     BrowserTimeoutError,
     BrowserCrashError,
+    BrowserSessionTerminatedError,
     PageNavigationError,
     ResourceExhaustionError,
     CircuitBreakerError,

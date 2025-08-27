@@ -471,6 +471,166 @@ class BrowserManager {
     }
 
     /**
+     * Validate browser session state and connectivity
+     * @param {string} sessionId - The session ID to validate
+     * @param {Object} page - The page object to validate (optional)
+     * @returns {Object} Validation result with status and details
+     */
+    async validateSessionState(sessionId, page = null) {
+        console.log(`🔍 Validating session state for session: ${sessionId}`);
+        
+        const validation = {
+            isValid: false,
+            sessionExists: false,
+            browserConnected: false,
+            pageResponsive: false,
+            details: [],
+            errors: []
+        };
+
+        try {
+            // Check if session exists in active browsers
+            const browserInfo = this.activeBrowsers.get(sessionId);
+            if (!browserInfo) {
+                validation.errors.push('Session not found in active browsers map');
+                validation.details.push(`Session ${sessionId} not found in browser manager`);
+                return validation;
+            }
+            validation.sessionExists = true;
+            validation.details.push('Session exists in browser manager');
+
+            // Check if browser instance exists and is connected
+            if (!browserInfo.browser) {
+                validation.errors.push('Browser instance is null or undefined');
+                validation.details.push('Browser instance missing from session info');
+                return validation;
+            }
+
+            // Test browser connection
+            try {
+                const isConnected = browserInfo.browser.isConnected();
+                if (!isConnected) {
+                    validation.errors.push('Browser is not connected');
+                    validation.details.push('Browser connection test failed');
+                    return validation;
+                }
+                validation.browserConnected = true;
+                validation.details.push('Browser connection verified');
+            } catch (connectionError) {
+                validation.errors.push(`Browser connection check failed: ${connectionError.message}`);
+                validation.details.push('Error occurred during browser connection test');
+                return validation;
+            }
+
+            // If page is provided, validate page responsiveness
+            if (page) {
+                try {
+                    // Test page responsiveness with a simple operation
+                    await Promise.race([
+                        page.evaluate(() => document.readyState),
+                        new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('Page responsiveness timeout')), 5000)
+                        )
+                    ]);
+                    validation.pageResponsive = true;
+                    validation.details.push('Page responsiveness verified');
+                } catch (pageError) {
+                    validation.errors.push(`Page responsiveness test failed: ${pageError.message}`);
+                    validation.details.push('Page appears unresponsive or closed');
+                    // Don't return here - browser might still be recoverable
+                }
+            } else {
+                // If no page provided, create a quick test to validate browser can create pages
+                try {
+                    const context = await browserInfo.browser.newContext();
+                    const testPage = await context.newPage();
+                    await testPage.close();
+                    await context.close();
+                    validation.pageResponsive = true;
+                    validation.details.push('Browser can create new pages successfully');
+                } catch (testError) {
+                    validation.errors.push(`Browser page creation test failed: ${testError.message}`);
+                    validation.details.push('Browser cannot create new pages');
+                    return validation;
+                }
+            }
+
+            // All checks passed
+            validation.isValid = validation.sessionExists && validation.browserConnected;
+            if (validation.isValid) {
+                validation.details.push('Session validation completed successfully');
+            }
+
+        } catch (error) {
+            validation.errors.push(`Session validation error: ${error.message}`);
+            validation.details.push(`Unexpected error during validation: ${error.message}`);
+        }
+
+        console.log(`🔍 Session validation result for ${sessionId}: ${validation.isValid ? '✅ Valid' : '❌ Invalid'}`);
+        if (validation.errors.length > 0) {
+            console.log(`   Errors: ${validation.errors.join(', ')}`);
+        }
+
+        return validation;
+    }
+
+    /**
+     * Validate session before page operations with automatic recovery
+     * @param {string} sessionId - The session ID to validate
+     * @param {Object} page - The page object (optional)
+     * @param {Object} options - Validation options
+     * @returns {Object} Validation result with recovery info
+     */
+    async validateAndRecoverSession(sessionId, page = null, options = {}) {
+        const { 
+            allowRecovery = true, 
+            maxRecoveryAttempts = 1,
+            operation = 'unknown'
+        } = options;
+
+        console.log(`🔧 Validating session for operation: ${operation}`);
+        
+        let validation = await this.validateSessionState(sessionId, page);
+        
+        // If validation failed but recovery is allowed, attempt recovery
+        if (!validation.isValid && allowRecovery && maxRecoveryAttempts > 0) {
+            console.log(`🔄 Attempting session recovery for ${sessionId}...`);
+            
+            try {
+                // Close the problematic session
+                await this.closeBrowser(sessionId, 'validation_failed_recovery');
+                
+                // Launch a new browser session
+                await this.launchBrowser(sessionId, {
+                    timeout: 30000,
+                    maxRetries: 2
+                });
+                
+                // Re-validate the new session
+                validation = await this.validateSessionState(sessionId);
+                
+                if (validation.isValid) {
+                    validation.recovered = true;
+                    validation.details.push('Session successfully recovered');
+                    console.log(`✅ Session recovery successful for ${sessionId}`);
+                } else {
+                    validation.recovered = false;
+                    validation.details.push('Session recovery failed');
+                    console.log(`❌ Session recovery failed for ${sessionId}`);
+                }
+                
+            } catch (recoveryError) {
+                validation.recovered = false;
+                validation.errors.push(`Recovery failed: ${recoveryError.message}`);
+                validation.details.push(`Session recovery attempt failed: ${recoveryError.message}`);
+                console.log(`❌ Session recovery error for ${sessionId}: ${recoveryError.message}`);
+            }
+        }
+
+        return validation;
+    }
+
+    /**
      * Handle browser crash recovery
      */
     async handleBrowserCrash(sessionId, error) {

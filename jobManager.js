@@ -7,7 +7,7 @@ const { config } = require('./config');
 const { systemMonitor } = require('./monitor');
 const { discordNotifier } = require('./discordNotifier');
 const { autoRestartManager } = require('./circuitBreaker');
-const { ErrorClassifier, BrowserLaunchError, BrowserCrashError, CircuitBreakerError } = require('./errors');
+const { ErrorClassifier, BrowserLaunchError, BrowserCrashError, BrowserSessionTerminatedError, CircuitBreakerError } = require('./errors');
 
 class JobManager extends EventEmitter {
     constructor() {
@@ -797,8 +797,9 @@ class JobManager extends EventEmitter {
                             batchIndex: batchIndex + 1
                         });
                         
-                        // Check if this is a browser crash that we can recover from
+                        // Check if this is a browser session termination or crash that we can recover from
                         if (classifiedBatchError instanceof BrowserCrashError || 
+                            classifiedBatchError instanceof BrowserSessionTerminatedError ||
                             classifiedBatchError.recoverable) {
                             
                             console.log(`🔄 ${classifiedBatchError.name} detected, attempting to recover...`);
@@ -821,18 +822,48 @@ class JobManager extends EventEmitter {
                             });
                             
                             try {
-                                // Close the crashed browser session
-                                if (session && session.browser) {
-                                    try {
-                                        await session.browser.close();
-                                        console.log('🔐 Closed crashed browser session');
-                                    } catch (closeError) {
-                                        console.log('⚠️ Could not close crashed browser (already closed)');
+                                // Enhanced cleanup based on error type
+                                if (classifiedBatchError instanceof BrowserSessionTerminatedError) {
+                                    console.log(`🔄 Handling browser session termination (reason: ${classifiedBatchError.terminalReason})`);
+                                    
+                                    // For session termination, browser is likely already closed
+                                    // Just ensure proper cleanup without attempting close
+                                    if (session && session.browser) {
+                                        try {
+                                            if (session.browser.isConnected()) {
+                                                await session.browser.close();
+                                                console.log('🔐 Closed browser session');
+                                            } else {
+                                                console.log('ℹ️ Browser session already disconnected');
+                                            }
+                                        } catch (closeError) {
+                                            console.log('⚠️ Browser session cleanup completed (connection already closed)');
+                                        }
+                                    }
+                                } else {
+                                    // Traditional crash handling
+                                    if (session && session.browser) {
+                                        try {
+                                            await session.browser.close();
+                                            console.log('🔐 Closed crashed browser session');
+                                        } catch (closeError) {
+                                            console.log('⚠️ Could not close crashed browser (already closed)');
+                                        }
                                     }
                                 }
                                 
-                                // Create a new login session
-                                console.log('🔑 Creating new login session after crash...');
+                                // Create a new login session with recovery strategy based on error type
+                                if (classifiedBatchError instanceof BrowserSessionTerminatedError && 
+                                    classifiedBatchError.terminalReason === 'race_condition') {
+                                    console.log('🔑 Creating new login session after race condition...');
+                                    // Wait a bit longer for race condition scenarios to settle
+                                    await new Promise(resolve => setTimeout(resolve, 3000));
+                                } else {
+                                    console.log('🔑 Creating new login session after crash...');
+                                    // Standard delay for other error types
+                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                }
+                                
                                 session = await loginAndCreateSession();
                                 
                                 // Increment login count and crash recovery count
@@ -928,18 +959,13 @@ class JobManager extends EventEmitter {
                     }
                 }
             } finally {
-                // Always close the browser session
-                if (session && session.browser) {
-                    await session.browser.close();
-                    console.log('🔐 Browser session closed after job completion');
+                // Set job completion status but don't close browser yet - post-processing may need it
+                if (job.status !== 'cancelled') {
+                    job.status = 'completed';
                 }
+                job.completedAt = new Date().toISOString();
+                console.log(`Job ${job.id} completed. Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`);
             }
-
-            // Job completed
-            job.status = job.status === 'cancelled' ? 'cancelled' : 'completed';
-            job.completedAt = new Date().toISOString();
-
-            console.log(`Job ${job.id} completed. Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`);
 
             // Send job completion status update with consolidated errors
             await this.sendStatusUpdate(job.id, {
@@ -1000,6 +1026,16 @@ class JobManager extends EventEmitter {
                 errors: job.errors.length > 0 ? job.errors : null
             });
 
+            // Now that all post-processing is complete, safely close the browser session
+            if (session && session.browser) {
+                try {
+                    await session.browser.close();
+                    console.log('🔐 Browser session closed after job post-processing completion');
+                } catch (browserCloseError) {
+                    console.log(`⚠️ Error closing browser session: ${browserCloseError.message}`);
+                }
+            }
+
         } catch (error) {
             job.status = 'failed';
             job.errors.push({
@@ -1020,6 +1056,16 @@ class JobManager extends EventEmitter {
                 error: error.message,
                 errors: job.errors.length > 0 ? job.errors : null
             });
+
+            // Close browser session on job failure
+            if (session && session.browser) {
+                try {
+                    await session.browser.close();
+                    console.log('🔐 Browser session closed after job failure');
+                } catch (browserCloseError) {
+                    console.log(`⚠️ Error closing browser session after job failure: ${browserCloseError.message}`);
+                }
+            }
         }
     }
 

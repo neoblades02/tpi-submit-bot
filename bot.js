@@ -3281,6 +3281,13 @@ async function processRecordsWithSession(session, data, options = {}) {
 
     try {
         console.log('📋 Navigating to Quick Submit form...');
+        
+        // Validate session before navigation
+        const sessionValidation = await browserManager.validateSessionState(session.sessionId, page);
+        if (!sessionValidation.isValid) {
+            throw new Error(`Session validation failed before navigation: ${sessionValidation.errors.join(', ')}`);
+        }
+        
         await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
 
         // Wait for a known element on the form page to ensure it's loaded
@@ -3441,6 +3448,13 @@ async function processRecordsWithSession(session, data, options = {}) {
                             
                             // Navigate back to Quick Submit form after F5 refresh
                             console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
+                            
+                            // Validate session before navigation
+                            const sessionValidationAfterRefresh = await browserManager.validateSessionState(session.sessionId, page);
+                            if (!sessionValidationAfterRefresh.isValid) {
+                                throw new Error(`Session validation failed before navigation after refresh: ${sessionValidationAfterRefresh.errors.join(', ')}`);
+                            }
+                            
                             await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
                             
                             // Wait for the form to load
@@ -3622,6 +3636,13 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 
                                 // Navigate back to Quick Submit form after F5 refresh
                                 console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
+                                
+                                // Validate session before navigation
+                                const sessionValidationBeforeRetry = await browserManager.validateSessionState(session.sessionId, page);
+                                if (!sessionValidationBeforeRetry.isValid) {
+                                    throw new Error(`Session validation failed before retry navigation: ${sessionValidationBeforeRetry.errors.join(', ')}`);
+                                }
+                                
                                 await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
                                 
                                 // Wait for the form to load
@@ -3656,6 +3677,13 @@ async function processRecordsWithSession(session, data, options = {}) {
 
                     // Refresh form page after successful submission to ensure clean state for next record
                     console.log('  🔄 Refreshing form page to start fresh...');
+                    
+                    // Validate session before navigation
+                    const sessionValidationBeforeRefresh = await browserManager.validateSessionState(session.sessionId, page);
+                    if (!sessionValidationBeforeRefresh.isValid) {
+                        throw new Error(`Session validation failed before form refresh navigation: ${sessionValidationBeforeRefresh.errors.join(', ')}`);
+                    }
+                    
                     await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
                     
                     // Wait for the form to load using dynamic selector detection
