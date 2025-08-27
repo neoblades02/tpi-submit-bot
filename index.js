@@ -5,7 +5,7 @@ const JobManager = require('./jobManager');
 const { discordNotifier } = require('./discordNotifier');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
 const jobManager = new JobManager();
 
 app.use(express.json({ limit: '50mb' }));
