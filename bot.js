@@ -2704,6 +2704,8 @@ async function sendToWebhook(processedData, jobErrors = []) {
 async function loginAndCreateSession() {
     console.log('🔑 Creating enhanced browser session with stability features...');
     
+    let browser = null; // Declare browser variable outside try block for cleanup access
+    
     try {
         // Start system monitoring if not already started
         if (!systemMonitor.isMonitoring) {
@@ -2711,7 +2713,9 @@ async function loginAndCreateSession() {
         }
 
         // Launch browser using enhanced browser manager
-        const { browser, sessionId, launchTime } = await browserManager.launchBrowser();
+        const browserResult = await browserManager.launchBrowser();
+        browser = browserResult.browser; // Assign browser to the outer scope variable
+        const { sessionId, launchTime } = browserResult;
         console.log(`🚀 Browser launched successfully (${launchTime}ms) - Session ID: ${sessionId}`);
     
         const context = await browser.newContext();
