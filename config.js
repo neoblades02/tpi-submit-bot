@@ -57,16 +57,16 @@ const config = {
     // Browser Configuration
     browser: {
         headless: parseBoolEnv('HEADLESS', true),
-        timeout: parseIntEnv('BROWSER_TIMEOUT', 180000), // 3 minutes default (increased from 120000)
-        launchTimeout: parseIntEnv('BROWSER_LAUNCH_TIMEOUT', 240000), // 4 minutes for launch specifically
-        pageTimeout: parseIntEnv('PAGE_TIMEOUT', 60000),
-        navigationTimeout: parseIntEnv('NAVIGATION_TIMEOUT', 60000),
-        maxRetries: parseIntEnv('BROWSER_MAX_RETRIES', 5), // Increased from 3
-        retryDelay: parseIntEnv('BROWSER_RETRY_DELAY', 5000),
-        maxRetryDelay: parseIntEnv('BROWSER_MAX_RETRY_DELAY', 60000), // Max 1 minute between retries
-        resourceTimeout: parseIntEnv('BROWSER_RESOURCE_TIMEOUT_MS', 600000), // 10 minutes
+        timeout: parseIntEnv('BROWSER_TIMEOUT', 240000), // Increased to 4 minutes
+        launchTimeout: parseIntEnv('BROWSER_LAUNCH_TIMEOUT', 300000), // Increased to 5 minutes
+        pageTimeout: parseIntEnv('PAGE_TIMEOUT', 90000), // Increased to 90 seconds
+        navigationTimeout: parseIntEnv('NAVIGATION_TIMEOUT', 90000), // Increased to 90 seconds
+        maxRetries: parseIntEnv('BROWSER_MAX_RETRIES', 5),
+        retryDelay: parseIntEnv('BROWSER_RETRY_DELAY', 10000), // Increased to 10 seconds
+        maxRetryDelay: parseIntEnv('BROWSER_MAX_RETRY_DELAY', 120000), // Increased to 2 minutes
+        resourceTimeout: parseIntEnv('BROWSER_RESOURCE_TIMEOUT_MS', 900000), // Increased to 15 minutes
         
-        // Browser launch arguments
+        // Enhanced browser launch arguments for stability
         args: parseArrayEnv('BROWSER_ARGS', [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -74,14 +74,28 @@ const config = {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',
             '--disable-gpu',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
             '--disable-ipc-flooding-protection',
-            '--memory-pressure-off'
+            '--memory-pressure-off',
+            '--max_old_space_size=2048',
+            '--disable-extensions',
+            '--disable-plugins',
+            '--disable-plugins-discovery',
+            '--disable-web-security',
+            '--allow-running-insecure-content',
+            '--disable-features=VizDisplayCompositor',
+            '--disable-breakpad',
+            '--disable-crash-reporter',
+            '--disable-sync',
+            '--disable-translate',
+            '--disable-default-apps',
+            '--disable-background-networking',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-ipc-flooding-protection'
         ])
     },
 
@@ -98,10 +112,10 @@ const config = {
 
     // Memory Monitoring Configuration
     memory: {
-        threshold: parseIntEnv('MEMORY_THRESHOLD_MB', 512), // 512MB
-        maxUsage: parseIntEnv('MAX_MEMORY_USAGE_MB', 1024), // 1GB
-        checkInterval: parseIntEnv('MEMORY_CHECK_INTERVAL_MS', 30000), // 30 seconds
-        gcThreshold: parseIntEnv('GC_THRESHOLD_MB', 256), // 256MB
+        threshold: parseIntEnv('MEMORY_THRESHOLD_MB', 768), // Increased to 768MB
+        maxUsage: parseIntEnv('MAX_MEMORY_USAGE_MB', 2048), // Increased to 2GB
+        checkInterval: parseIntEnv('MEMORY_CHECK_INTERVAL_MS', 20000), // 20 seconds
+        gcThreshold: parseIntEnv('GC_THRESHOLD_MB', 384), // Increased to 384MB
         enableGC: parseBoolEnv('ENABLE_MANUAL_GC', true)
     },
 

@@ -2821,11 +2821,30 @@ async function loginAndCreateSession() {
         }
         
         try {
-            // Add timeout to page creation
+            // Add enhanced timeout and stability checks to page creation
+            console.log('🔍 Adding stability delay before page creation...');
+            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second stability delay
+            
+            // Re-validate browser connection before page creation
+            console.log('🔍 Re-validating browser connection after delay...');
+            if (!browser || !browser.isConnected()) {
+                throw new Error('Browser disconnected during stability delay');
+            }
+            console.log('✅ Browser still connected after stability delay');
+            
+            // Re-validate context before page creation
+            console.log('🔍 Re-validating context state before page creation...');
+            if (!context) {
+                throw new Error('Context is null before page creation');
+            }
+            console.log('✅ Context validated before page creation');
+            
+            // Add timeout to page creation with enhanced error handling
+            console.log('📄 Creating new page with enhanced timeout...');
             page = await Promise.race([
                 context.newPage(),
                 new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Page creation timeout after 30s')), 30000)
+                    setTimeout(() => reject(new Error('Page creation timeout after 45s')), 45000)
                 )
             ]);
             const pageDuration = Date.now() - pageStartTime;

@@ -103,7 +103,10 @@ class BrowserManager {
                 // Pre-launch cleanup
                 await this.preLaunchCleanup();
 
-                // Check memory again before each attempt
+                // Check system memory usage before launching browser
+                await this.checkMemoryUsage();
+
+                // Check memory again before each attempt using systemMonitor
                 const memoryBefore = systemMonitor.checkMemoryUsage();
                 if (memoryBefore.rss > config.memory.threshold) {
                     console.log(`⚠️ Memory usage high before launch: ${memoryBefore.rss}MB`);
@@ -143,7 +146,14 @@ class BrowserManager {
                     '--webgl-antialiasing-mode=none',
                     
                     // Add process isolation for stability
-                    ...(attempt > 2 ? ['--disable-site-isolation-trials'] : [])
+                    ...(attempt > 2 ? ['--disable-site-isolation-trials'] : []),
+                    
+                    // Additional stability improvements
+                    '--disable-hang-monitor',
+                    '--disable-background-timer-throttling',
+                    '--disable-renderer-backgrounding',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-features=CalculateNativeWinOcclusion'
                 ];
 
                 const launchOptions = {
@@ -265,13 +275,44 @@ class BrowserManager {
      */
     async verifyBrowserConnection(browser, sessionId) {
         try {
-            // Test that we can create a context and page
-            const context = await browser.newContext();
+            console.log(`🔍 Verifying browser connection for session ${sessionId}...`);
+            
+            // Check if browser is connected
+            if (!browser.isConnected()) {
+                throw new Error('Browser is not connected');
+            }
+            
+            // Test that we can create a context
+            console.log(`🔍 Creating test context for session ${sessionId}...`);
+            const context = await browser.newContext({
+                // Use minimal context options for verification
+                userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+            });
+            
+            // Add a small delay to ensure context is stable
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Verify context is valid
+            if (!context) {
+                throw new Error('Failed to create test context');
+            }
+            
+            console.log(`🔍 Creating test page for session ${sessionId}...`);
+            // Test that we can create a page
             const page = await context.newPage();
             
+            // Add a small delay to ensure page is stable
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Verify page is valid
+            if (!page) {
+                throw new Error('Failed to create test page');
+            }
+            
             // Navigate to a simple data URL to test navigation
+            console.log(`🔍 Testing navigation for session ${sessionId}...`);
             await page.goto('data:text/html,<html><body>Browser Test</body></html>', { 
-                timeout: 10000 
+                timeout: 15000 
             });
             
             // Clean up test resources

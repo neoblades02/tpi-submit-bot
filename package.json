@@ -24,7 +24,7 @@
     "axios": "^1.10.0",
     "dotenv": "^17.2.0",
     "express": "^4.19.2",
-    "playwright": "^1.45.1",
+    "playwright": "^1.55.0",
     "uuid": "^9.0.1"
   }
 }

@@ -1,5 +1,5 @@
 # Use the latest official Playwright Node.js image for browser automation
-FROM mcr.microsoft.com/playwright:v1.45.1-jammy
+FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 # Create and change to the app directory
 WORKDIR /usr/src/app

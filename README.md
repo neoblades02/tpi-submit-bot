@@ -548,7 +548,7 @@ tpi-submit-bot/
 ├── bot.js              # Main automation logic with Playwright
 ├── index.js            # Express server with sync/async endpoints
 ├── jobManager.js       # Async job processing and queue management
-├── package.json        # Dependencies (express, playwright, dotenv, axios, uuid)
+├── package.json        # Dependencies (express, playwright@1.55.0, dotenv, axios, uuid)
 ├── Dockerfile          # Container configuration for deployment
 ├── docker-compose.yml  # Docker Compose for local testing
 ├── .dockerignore       # Docker build optimization
@@ -567,7 +567,7 @@ tpi-submit-bot/
 ## Dependencies
 
 - **express**: Web server framework
-- **playwright**: Browser automation library
+- **playwright**: Browser automation library (v1.55.0)
 - **dotenv**: Environment variable management
 - **axios**: HTTP client for webhook requests
 - **uuid**: Unique identifier generation for job management
