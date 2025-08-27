@@ -2705,21 +2705,188 @@ async function loginAndCreateSession() {
     console.log('🔑 Creating enhanced browser session with stability features...');
     
     let browser = null; // Declare browser variable outside try block for cleanup access
+    let sessionId = null; // Track session ID for debugging
+    let context = null;
+    let page = null;
+    const startTime = Date.now();
     
     try {
         // Start system monitoring if not already started
+        console.log('📊 Checking system monitoring status...');
         if (!systemMonitor.isMonitoring) {
             systemMonitor.startMonitoring();
+            console.log('✅ System monitoring started');
+        } else {
+            console.log('✅ System monitoring already active');
         }
 
         // Launch browser using enhanced browser manager
+        console.log('🚀 Initiating browser launch...');
+        const launchStartTime = Date.now();
         const browserResult = await browserManager.launchBrowser();
+        const launchDuration = Date.now() - launchStartTime;
+        
         browser = browserResult.browser; // Assign browser to the outer scope variable
-        const { sessionId, launchTime } = browserResult;
-        console.log(`🚀 Browser launched successfully (${launchTime}ms) - Session ID: ${sessionId}`);
-    
-        const context = await browser.newContext();
-        const page = await context.newPage();
+        sessionId = browserResult.sessionId;
+        const { launchTime } = browserResult;
+        console.log(`🚀 Browser launched successfully (${launchTime}ms, total: ${launchDuration}ms) - Session ID: ${sessionId}`);
+        
+        // Critical: Validate browser state before proceeding
+        console.log('🔍 Validating browser state after launch...');
+        if (!browser) {
+            throw new Error('Browser object is null after successful launch');
+        }
+        
+        console.log(`🔍 Browser isConnected: ${browser.isConnected()}`);
+        if (!browser.isConnected()) {
+            throw new Error('Browser is not connected despite successful launch');
+        }
+        
+        // Additional validation: try to get browser version to ensure it's really working
+        try {
+            const version = await browser.version();
+            console.log(`🔍 Browser version: ${version}`);
+        } catch (versionError) {
+            console.error('❌ Failed to get browser version:', versionError.message);
+            throw new Error(`Browser validation failed: ${versionError.message}`);
+        }
+        
+        console.log('✅ Browser connection validated');
+        
+        // Add small delay to ensure browser stability
+        console.log('⏳ Adding stability delay (1000ms)...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Re-validate browser connection after delay
+        console.log('🔍 Re-validating browser connection after delay...');
+        if (!browser.isConnected()) {
+            throw new Error('Browser disconnected during stability delay');
+        }
+        console.log('✅ Browser still connected after stability delay');
+        
+        // Create browser context with enhanced logging
+        console.log('🌐 Creating browser context...');
+        const contextStartTime = Date.now();
+        
+        // Final browser check before context creation
+        if (!browser || !browser.isConnected()) {
+            throw new Error('Browser is no longer connected before context creation');
+        }
+        
+        try {
+            // Add timeout to context creation
+            context = await Promise.race([
+                browser.newContext({
+                    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport: { width: 1920, height: 1080 },
+                    ignoreHTTPSErrors: true,
+                    bypassCSP: true
+                }),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Context creation timeout after 30s')), 30000)
+                )
+            ]);
+            const contextDuration = Date.now() - contextStartTime;
+            console.log(`✅ Browser context created successfully (${contextDuration}ms)`);
+        } catch (contextError) {
+            console.error('❌ Failed to create browser context:', {
+                error: contextError.message,
+                stack: contextError.stack,
+                browserExists: !!browser,
+                browserConnected: browser ? browser.isConnected() : 'browser is null',
+                sessionId: sessionId,
+                timeSinceLaunch: Date.now() - launchStartTime,
+                contextCreationTime: Date.now() - contextStartTime
+            });
+            throw new Error(`Context creation failed: ${contextError.message}`);
+        }
+        
+        // Validate context before creating page
+        console.log('🔍 Validating context state...');
+        if (!context) {
+            throw new Error('Context is null after creation');
+        }
+        console.log('✅ Context validated');
+        
+        // Create page with enhanced logging
+        console.log('📄 Creating new page...');
+        const pageStartTime = Date.now();
+        
+        // Validate browser and context before page creation
+        if (!browser || !browser.isConnected()) {
+            throw new Error('Browser is no longer connected before page creation');
+        }
+        if (!context) {
+            throw new Error('Context is null before page creation');
+        }
+        
+        try {
+            // Add timeout to page creation
+            page = await Promise.race([
+                context.newPage(),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Page creation timeout after 30s')), 30000)
+                )
+            ]);
+            const pageDuration = Date.now() - pageStartTime;
+            console.log(`✅ Page created successfully (${pageDuration}ms)`);
+        } catch (pageError) {
+            console.error('❌ Failed to create page:', {
+                error: pageError.message,
+                stack: pageError.stack,
+                browserExists: !!browser,
+                browserConnected: browser ? browser.isConnected() : 'browser is null',
+                contextExists: !!context,
+                sessionId: sessionId,
+                timeSinceLaunch: Date.now() - launchStartTime,
+                timeSinceContext: Date.now() - contextStartTime,
+                pageCreationTime: Date.now() - pageStartTime
+            });
+            throw new Error(`Page creation failed: ${pageError.message}`);
+        }
+        
+        // Validate page
+        console.log('🔍 Validating page state...');
+        if (!page) {
+            throw new Error('Page is null after creation');
+        }
+        console.log('✅ Page validated');
+        
+        const totalSetupTime = Date.now() - startTime;
+        const contextCreationTime = Date.now() - contextStartTime; 
+        const pageCreationTime = Date.now() - pageStartTime;
+        
+        // Log performance metrics
+        const performanceMetrics = {
+            totalTime: totalSetupTime,
+            launchTime: launchTime,
+            contextCreationTime: contextCreationTime,
+            pageCreationTime: pageCreationTime,
+            sessionId: sessionId,
+            memoryUsage: process.memoryUsage(),
+            timestamp: new Date().toISOString()
+        };
+        
+        console.log(`🎯 Browser setup completed successfully!`);
+        console.log(`   ⏱️ Total time: ${totalSetupTime}ms`);
+        console.log(`   ⏱️ Launch time: ${launchTime}ms`);
+        console.log(`   ⏱️ Context creation: ${contextCreationTime}ms`);
+        console.log(`   ⏱️ Page creation: ${pageCreationTime}ms`);
+        console.log(`   ⏱️ Session ID: ${sessionId}`);
+        console.log(`   📊 Performance metrics:`, performanceMetrics);
+        
+        // Final validation before proceeding to login
+        console.log('🔍 Final validation before login...');
+        if (!browser || !browser.isConnected()) {
+            throw new Error('Browser disconnected during setup completion');
+        }
+        if (!context) {
+            throw new Error('Context lost during setup completion');
+        }
+        if (!page) {
+            throw new Error('Page lost during setup completion');
+        }
+        console.log('✅ Final validation passed - ready for login');
 
     console.log('Navigating to login page...');
     
@@ -2797,43 +2964,265 @@ async function loginAndCreateSession() {
 
     console.log('✅ Login completed! Session ready for processing');
 
-    // Return session object with browser, context, and page
-    return {
+    // Return session object with browser, context, page, and metadata
+    const sessionObject = {
         browser: browser,
         context: context,
-        page: page
+        page: page,
+        sessionId: sessionId,
+        createdAt: new Date().toISOString(),
+        setupTime: totalSetupTime,
+        performanceMetrics: {
+            launchTime: launchTime,
+            contextCreationTime: contextCreationTime,
+            pageCreationTime: pageCreationTime
+        }
     };
     
+    console.log(`✅ Session object created successfully with metadata`);
+    return sessionObject;
+    
     } catch (error) {
-        console.error('❌ Login and session creation failed:', error.message);
-        
-        // Classify the error for better handling
-        const classifiedError = ErrorClassifier.classify(error, {
-            operation: 'login_and_session_creation'
+        const totalErrorTime = Date.now() - startTime;
+        console.error('❌ Login and session creation failed:', {
+            message: error.message,
+            stack: error.stack,
+            sessionId: sessionId,
+            timeSinceStart: totalErrorTime,
+            browserExists: browser ? 'yes' : 'no',
+            browserConnected: browser ? browser.isConnected() : 'n/a',
+            contextExists: context ? 'yes' : 'no',
+            pageExists: page ? 'yes' : 'no'
         });
         
-        // Send error notification if discord notifier is available
+        // Enhanced error classification with detailed context
+        const errorContext = {
+            operation: 'login_and_session_creation',
+            sessionId: sessionId,
+            timeSinceStart: totalErrorTime,
+            errorOccurredAt: new Date().toISOString(),
+            browserState: {
+                exists: !!browser,
+                connected: browser ? browser.isConnected() : false
+            },
+            contextState: {
+                exists: !!context
+            },
+            pageState: {
+                exists: !!page
+            },
+            systemInfo: {
+                memoryUsage: process.memoryUsage(),
+                platform: process.platform,
+                nodeVersion: process.version
+            }
+        };
+        
+        // Log detailed error context for debugging
+        console.error('🛠️ Detailed error context:', errorContext);
+        
+        const classifiedError = ErrorClassifier.classify(error, errorContext);
+        
+        // Send enhanced error notification if discord notifier is available
         if (discordNotifier) {
             await discordNotifier.sendErrorNotification(classifiedError, {
                 operation: 'loginAndCreateSession',
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                sessionId: sessionId,
+                executionTime: totalErrorTime,
+                errorPhase: determineErrorPhase(browser, context, page),
+                browserState: {
+                    exists: !!browser,
+                    connected: browser ? browser.isConnected() : false
+                },
+                contextState: {
+                    exists: !!context
+                },
+                pageState: {
+                    exists: !!page
+                },
+                possibleCauses: determinePossibleCauses(error, browser, context, page),
+                recommendedActions: [
+                    'Check browser connection stability',
+                    'Verify system resources',
+                    'Review browser manager logs',
+                    'Consider increasing timeouts if persistent'
+                ]
             }).catch(notifyError => {
                 console.log('⚠️ Failed to send Discord notification:', notifyError.message);
             });
         }
         
-        // Clean up any partial browser session
+        // Enhanced cleanup with detailed tracking
+        console.log('🧹 Starting enhanced cleanup after error...');
         try {
-            if (browser) {
-                await browser.close();
-                console.log('🔐 Cleaned up browser after login failure');
-            }
+            const cleanupResults = await performLoginSessionCleanup(browser, sessionId, context, page, 'login_session_error');
+            
+            // Log cleanup summary
+            const cleanupSummary = {
+                sessionId: sessionId,
+                errorTime: totalErrorTime,
+                cleanupAttempted: {
+                    browser: cleanupResults.browser.attempted,
+                    context: cleanupResults.context.attempted,
+                    page: cleanupResults.page.attempted
+                },
+                cleanupSuccess: {
+                    browser: cleanupResults.browser.success,
+                    context: cleanupResults.context.success,
+                    page: cleanupResults.page.success
+                }
+            };
+            
+            console.log('📊 Cleanup summary:', cleanupSummary);
+            
         } catch (cleanupError) {
-            console.log('⚠️ Error during browser cleanup:', cleanupError.message);
+            console.error('❌ Critical error during enhanced cleanup:', {
+                error: cleanupError.message,
+                stack: cleanupError.stack,
+                sessionId: sessionId
+            });
         }
         
         throw classifiedError;
     }
+}
+
+// Enhanced cleanup function for loginAndCreateSession
+async function performLoginSessionCleanup(browser, sessionId, context, page, reason = 'unknown') {
+    console.log(`🧹 Performing enhanced cleanup (reason: ${reason}, sessionId: ${sessionId})...`);
+    
+    const cleanupStartTime = Date.now();
+    const cleanupResults = {
+        browser: { attempted: false, success: false, error: null },
+        context: { attempted: false, success: false, error: null },
+        page: { attempted: false, success: false, error: null }
+    };
+    
+    // Clean up page first
+    if (page) {
+        cleanupResults.page.attempted = true;
+        try {
+            await page.close();
+            cleanupResults.page.success = true;
+            console.log('✅ Page cleaned up successfully');
+        } catch (pageError) {
+            cleanupResults.page.error = pageError.message;
+            console.error('❌ Failed to clean up page:', pageError.message);
+        }
+    }
+    
+    // Clean up context
+    if (context) {
+        cleanupResults.context.attempted = true;
+        try {
+            await context.close();
+            cleanupResults.context.success = true;
+            console.log('✅ Context cleaned up successfully');
+        } catch (contextError) {
+            cleanupResults.context.error = contextError.message;
+            console.error('❌ Failed to clean up context:', contextError.message);
+        }
+    }
+    
+    // Clean up browser last
+    if (browser) {
+        cleanupResults.browser.attempted = true;
+        try {
+            const wasConnected = browser.isConnected();
+            console.log(`🔐 Attempting to close browser (was connected: ${wasConnected})...`);
+            
+            if (wasConnected) {
+                await browser.close();
+            } else {
+                console.log('ℹ️ Browser was already disconnected, skipping close()');
+            }
+            
+            cleanupResults.browser.success = true;
+            console.log('✅ Browser cleaned up successfully');
+        } catch (browserError) {
+            cleanupResults.browser.error = browserError.message;
+            console.error('❌ Failed to clean up browser:', browserError.message);
+        }
+    }
+    
+    const cleanupDuration = Date.now() - cleanupStartTime;
+    console.log(`🧹 Cleanup completed in ${cleanupDuration}ms`);
+    console.log('📊 Cleanup results:', cleanupResults);
+    
+    return cleanupResults;
+}
+
+// Helper functions for enhanced error analysis in loginAndCreateSession
+function determineErrorPhase(browser, context, page) {
+    if (!browser) {
+        return 'browser_launch';
+    }
+    if (!browser.isConnected()) {
+        return 'browser_disconnection';
+    }
+    if (!context) {
+        return 'context_creation';
+    }
+    if (!page) {
+        return 'page_creation';
+    }
+    return 'login_process';
+}
+
+function determinePossibleCauses(error, browser, context, page) {
+    const causes = [];
+    
+    // Check error message for specific patterns
+    const errorMessage = error.message.toLowerCase();
+    
+    // Log analysis context (using all parameters)
+    console.log('🔍 Analyzing error causes:', {
+        errorMessage: errorMessage.substring(0, 100),
+        browserExists: !!browser,
+        contextExists: !!context,
+        pageExists: !!page
+    });
+    
+    if (errorMessage.includes('target page, context or browser has been closed')) {
+        causes.push('Browser was closed unexpectedly during operation');
+        causes.push('Possible race condition in browser lifecycle management');
+        causes.push('System resource exhaustion causing browser crash');
+    }
+    
+    if (errorMessage.includes('timeout')) {
+        causes.push('Operation exceeded configured timeout');
+        causes.push('System performance issues causing slow response');
+        causes.push('Network connectivity problems');
+    }
+    
+    if (errorMessage.includes('connection') || errorMessage.includes('disconnected')) {
+        causes.push('Browser process terminated unexpectedly');
+        causes.push('System resource limits reached');
+        causes.push('Browser launcher configuration issues');
+    }
+    
+    // Browser state analysis
+    if (browser && !browser.isConnected()) {
+        causes.push('Browser lost connection after successful launch');
+        causes.push('Browser process may have crashed or been killed');
+    }
+    
+    if (!browser) {
+        causes.push('Browser object is null - launch may have failed');
+    }
+    
+    // System-level causes
+    const memUsage = process.memoryUsage();
+    if (memUsage.heapUsed > 500 * 1024 * 1024) { // 500MB
+        causes.push('High memory usage may be causing instability');
+    }
+    
+    if (causes.length === 0) {
+        causes.push('Unknown cause - check detailed logs for more information');
+    }
+    
+    return causes;
 }
 
 // Helper function to send individual record errors to status webhook
