@@ -584,8 +584,9 @@ class BrowserManager {
     async validateAndRecoverSession(sessionId, page = null, options = {}) {
         const { 
             allowRecovery = true, 
-            maxRecoveryAttempts = 1,
-            operation = 'unknown'
+            maxRecoveryAttempts = 2,
+            operation = 'unknown',
+            retryDelay = 1000
         } = options;
 
         console.log(`🔧 Validating session for operation: ${operation}`);
@@ -596,35 +597,73 @@ class BrowserManager {
         if (!validation.isValid && allowRecovery && maxRecoveryAttempts > 0) {
             console.log(`🔄 Attempting session recovery for ${sessionId}...`);
             
-            try {
-                // Close the problematic session
-                await this.closeBrowser(sessionId, 'validation_failed_recovery');
-                
-                // Launch a new browser session
-                await this.launchBrowser(sessionId, {
-                    timeout: 30000,
-                    maxRetries: 2
-                });
-                
-                // Re-validate the new session
-                validation = await this.validateSessionState(sessionId);
-                
-                if (validation.isValid) {
-                    validation.recovered = true;
-                    validation.details.push('Session successfully recovered');
-                    console.log(`✅ Session recovery successful for ${sessionId}`);
-                } else {
-                    validation.recovered = false;
-                    validation.details.push('Session recovery failed');
-                    console.log(`❌ Session recovery failed for ${sessionId}`);
+            for (let recoveryAttempt = 1; recoveryAttempt <= maxRecoveryAttempts; recoveryAttempt++) {
+                try {
+                    console.log(`🔄 Recovery attempt ${recoveryAttempt}/${maxRecoveryAttempts} for ${sessionId}`);
+                    
+                    // Add delay between recovery attempts
+                    if (recoveryAttempt > 1) {
+                        console.log(`⏳ Waiting ${retryDelay}ms before recovery attempt...`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    }
+                    
+                    // Close the problematic session with proper cleanup
+                    try {
+                        await this.closeBrowser(sessionId, `validation_failed_recovery_attempt_${recoveryAttempt}`);
+                    } catch (closeError) {
+                        console.log(`⚠️ Error closing session during recovery: ${closeError.message}`);
+                        // Continue with recovery even if close fails
+                    }
+                    
+                    // Wait a bit for cleanup to complete
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Launch a new browser session with recovery-specific options
+                    await this.launchBrowser(sessionId, {
+                        timeout: 45000, // Longer timeout for recovery
+                        maxRetries: 3,
+                        recovery: true
+                    });
+                    
+                    console.log(`🔧 New browser launched for recovery: ${sessionId}`);
+                    
+                    // Re-validate the new session
+                    validation = await this.validateSessionState(sessionId);
+                    
+                    if (validation.isValid) {
+                        validation.recovered = true;
+                        validation.recoveryAttempt = recoveryAttempt;
+                        validation.details.push(`Session successfully recovered on attempt ${recoveryAttempt}`);
+                        console.log(`✅ Session recovery successful for ${sessionId} on attempt ${recoveryAttempt}`);
+                        break; // Success, exit recovery loop
+                    } else {
+                        console.log(`⚠️ Session recovery attempt ${recoveryAttempt} validation failed for ${sessionId}`);
+                        if (recoveryAttempt === maxRecoveryAttempts) {
+                            validation.recovered = false;
+                            validation.details.push(`All ${maxRecoveryAttempts} recovery attempts failed`);
+                            console.log(`❌ All session recovery attempts failed for ${sessionId}`);
+                        }
+                    }
+                    
+                } catch (recoveryError) {
+                    console.log(`❌ Session recovery attempt ${recoveryAttempt} error for ${sessionId}: ${recoveryError.message}`);
+                    
+                    if (recoveryAttempt === maxRecoveryAttempts) {
+                        validation.recovered = false;
+                        validation.errors.push(`Recovery failed after ${maxRecoveryAttempts} attempts: ${recoveryError.message}`);
+                        validation.details.push(`Session recovery attempts exhausted: ${recoveryError.message}`);
+                    }
+                    
+                    // Continue to next attempt if not the last one
+                    continue;
                 }
-                
-            } catch (recoveryError) {
-                validation.recovered = false;
-                validation.errors.push(`Recovery failed: ${recoveryError.message}`);
-                validation.details.push(`Session recovery attempt failed: ${recoveryError.message}`);
-                console.log(`❌ Session recovery error for ${sessionId}: ${recoveryError.message}`);
             }
+        } else if (!validation.isValid) {
+            console.log(`⚠️ Session validation failed and recovery is disabled/exhausted for ${sessionId}`);
+            validation.recovered = false;
+        } else {
+            console.log(`✅ Session validation passed for ${sessionId}`);
+            validation.recovered = null; // No recovery was needed
         }
 
         return validation;

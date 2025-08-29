@@ -157,7 +157,41 @@ class BrowserSessionTerminatedError extends Error {
         this.timestamp = new Date().toISOString();
         this.recoverable = terminalReason !== 'manual_close' && terminalReason !== 'process_killed';
         
+        // Enhanced recovery guidance
+        this.retryStrategy = this.getRetryStrategy(terminalReason);
+        this.retryDelay = this.getRetryDelay(terminalReason);
+        
         Error.captureStackTrace(this, BrowserSessionTerminatedError);
+    }
+
+    getRetryStrategy(reason) {
+        switch (reason) {
+            case 'race_condition':
+                return 'immediate_with_delay';
+            case 'network_disconnection':
+                return 'progressive_backoff';
+            case 'context_destroyed':
+                return 'session_recreation';
+            case 'browser_crash':
+                return 'full_restart';
+            default:
+                return 'standard_retry';
+        }
+    }
+
+    getRetryDelay(reason) {
+        switch (reason) {
+            case 'race_condition':
+                return 3000; // Wait longer for race conditions
+            case 'network_disconnection':
+                return 5000; // Wait for network stability
+            case 'context_destroyed':
+                return 2000; // Standard delay
+            case 'browser_crash':
+                return 1000; // Quick retry after crash cleanup
+            default:
+                return 1500; // Default delay
+        }
     }
 
     toJSON() {
@@ -211,6 +245,30 @@ class ErrorClassifier {
         const message = error.message || error.toString();
         const { attempt = 1, maxAttempts = 3, operation = 'unknown' } = context;
 
+        // Form validation errors (recoverable)
+        if (error.formValidationFailure || this.isFormValidationError(message)) {
+            const formError = new Error(message);
+            formError.name = 'FormValidationError';
+            formError.type = 'form_validation';
+            formError.recoverable = true;
+            formError.retryStrategy = 'immediate_retry';
+            formError.retryDelay = 1000;
+            formError.formValidationFailure = true;
+            return formError;
+        }
+
+        // Session validation errors (recoverable with session recovery)
+        if (this.isSessionValidationError(message)) {
+            const sessionError = new Error(message);
+            sessionError.name = 'SessionValidationError';
+            sessionError.type = 'session_validation';
+            sessionError.recoverable = true;
+            sessionError.retryStrategy = 'session_recovery';
+            sessionError.retryDelay = 2000;
+            sessionError.sessionValidationFailure = true;
+            return sessionError;
+        }
+
         // Browser launch errors
         if (this.isBrowserLaunchError(message)) {
             return new BrowserLaunchError(message, attempt, maxAttempts, error);
@@ -243,8 +301,51 @@ class ErrorClassifier {
             return new ResourceExhaustionError(message, context.memoryUsage, 'memory', error);
         }
 
-        // Return original error if no classification matches
-        return error;
+        // Return enhanced original error if no classification matches
+        const enhancedError = error;
+        enhancedError.classificationAttempted = true;
+        enhancedError.recoverable = this.isGenerallyRecoverable(message);
+        enhancedError.retryStrategy = enhancedError.recoverable ? 'standard_retry' : 'no_retry';
+        enhancedError.retryDelay = 1500;
+        return enhancedError;
+    }
+
+    static isFormValidationError(message) {
+        const patterns = [
+            /form validation failed/i,
+            /form.*incomplete/i,
+            /form.*invalid/i,
+            /field.*missing/i,
+            /field.*empty/i,
+            /required.*field/i,
+            /validation.*error/i
+        ];
+        return patterns.some(pattern => pattern.test(message));
+    }
+
+    static isSessionValidationError(message) {
+        const patterns = [
+            /session validation failed/i,
+            /session.*invalid/i,
+            /session.*expired/i,
+            /session.*not.*found/i
+        ];
+        return patterns.some(pattern => pattern.test(message));
+    }
+
+    static isGenerallyRecoverable(message) {
+        const nonRecoverablePatterns = [
+            /permission.*denied/i,
+            /access.*denied/i,
+            /authentication.*failed/i,
+            /unauthorized/i,
+            /forbidden/i,
+            /not.*found.*404/i,
+            /syntax.*error/i,
+            /configuration.*error/i
+        ];
+        
+        return !nonRecoverablePatterns.some(pattern => pattern.test(message));
     }
 
     static isBrowserLaunchError(message) {
@@ -373,6 +474,120 @@ class ErrorClassifier {
         const timeoutMatch = message.match(/Timeout\s*(\d+)(?:ms)?/i);
         return timeoutMatch ? parseInt(timeoutMatch[1]) : 0;
     }
+
+    /**
+     * Get recommended retry strategy for an error
+     * @param {Error} error - The classified error
+     * @param {number} currentAttempt - Current retry attempt number
+     * @returns {Object} Retry recommendation
+     */
+    static getRetryRecommendation(error, currentAttempt = 1) {
+        const maxAttempts = error.maxAttempts || 3;
+        
+        if (currentAttempt >= maxAttempts) {
+            return {
+                shouldRetry: false,
+                reason: 'max_attempts_reached',
+                delay: 0
+            };
+        }
+
+        if (!error.recoverable) {
+            return {
+                shouldRetry: false,
+                reason: 'non_recoverable_error',
+                delay: 0
+            };
+        }
+
+        let delay = error.retryDelay || 1000;
+        let strategy = error.retryStrategy || 'standard_retry';
+
+        // Apply progressive backoff for certain error types
+        if (strategy === 'progressive_backoff') {
+            delay = delay * Math.pow(2, currentAttempt - 1);
+        }
+
+        // Cap the maximum delay
+        delay = Math.min(delay, 30000); // Max 30 seconds
+
+        return {
+            shouldRetry: true,
+            strategy,
+            delay,
+            reason: `${strategy}_attempt_${currentAttempt}`
+        };
+    }
+}
+
+/**
+ * Form Validation Error - for recoverable form-related issues
+ */
+class FormValidationError extends Error {
+    constructor(message, fieldName = null, expectedValue = null, actualValue = null) {
+        super(message);
+        this.name = 'FormValidationError';
+        this.type = 'form_validation';
+        this.fieldName = fieldName;
+        this.expectedValue = expectedValue;
+        this.actualValue = actualValue;
+        this.timestamp = new Date().toISOString();
+        this.recoverable = true;
+        this.retryStrategy = 'immediate_retry';
+        this.retryDelay = 1000;
+        this.formValidationFailure = true;
+        
+        Error.captureStackTrace(this, FormValidationError);
+    }
+
+    toJSON() {
+        return {
+            name: this.name,
+            message: this.message,
+            type: this.type,
+            fieldName: this.fieldName,
+            expectedValue: this.expectedValue,
+            actualValue: this.actualValue,
+            recoverable: this.recoverable,
+            retryStrategy: this.retryStrategy,
+            retryDelay: this.retryDelay,
+            timestamp: this.timestamp
+        };
+    }
+}
+
+/**
+ * Session Validation Error - for recoverable session-related issues
+ */
+class SessionValidationError extends Error {
+    constructor(message, sessionId = null, validationDetails = null) {
+        super(message);
+        this.name = 'SessionValidationError';
+        this.type = 'session_validation';
+        this.sessionId = sessionId;
+        this.validationDetails = validationDetails;
+        this.timestamp = new Date().toISOString();
+        this.recoverable = true;
+        this.retryStrategy = 'session_recovery';
+        this.retryDelay = 2000;
+        this.sessionValidationFailure = true;
+        
+        Error.captureStackTrace(this, SessionValidationError);
+    }
+
+    toJSON() {
+        return {
+            name: this.name,
+            message: this.message,
+            type: this.type,
+            sessionId: this.sessionId,
+            validationDetails: this.validationDetails,
+            recoverable: this.recoverable,
+            retryStrategy: this.retryStrategy,
+            retryDelay: this.retryDelay,
+            timestamp: this.timestamp
+        };
+    }
 }
 
 module.exports = {
@@ -383,5 +598,7 @@ module.exports = {
     PageNavigationError,
     ResourceExhaustionError,
     CircuitBreakerError,
+    FormValidationError,
+    SessionValidationError,
     ErrorClassifier
 };

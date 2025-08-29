@@ -459,8 +459,11 @@ async function loginAndProcess(data, options = {}) {
                             const formValid = await verifyFormState(page, formState);
                             if (!formValid) {
                                 console.log('  ⚠️  Form validation failed, fields may be incomplete');
-                                // Don't submit if form is invalid, continue to next attempt
-                                throw new Error('Form validation failed');
+                                // Don't throw - instead mark this attempt as failed and let retry logic handle it
+                                const validationError = new Error('Form validation failed - incomplete fields detected');
+                                validationError.recoverable = true;
+                                validationError.formValidationFailure = true;
+                                throw validationError;
                             }
                             
                             // 11. Submit the form with human-like interaction
@@ -614,8 +617,14 @@ async function loginAndProcess(data, options = {}) {
                 } catch (e) {
                     console.error(`Error processing record for ${record['Client Name']}:`, e);
                     
+                    // Check if this is a form validation failure (recoverable)
+                    if (e.formValidationFailure) {
+                        console.log(`  📋 Form validation failure for ${record['Client Name']} - will retry`);
+                        // Let the retry loop handle this - don't set recordProcessed to true
+                        continue;
+                    }
                     // Check if this is a browser crash or timeout
-                    if (isBrowserCrashed(e)) {
+                    else if (isBrowserCrashed(e)) {
                         console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
                         
                         // Attempt to recover from browser crash
@@ -623,7 +632,7 @@ async function loginAndProcess(data, options = {}) {
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
-                            processingAttempt++;
+                            // Don't increment here - let the main loop handle it
                             continue; // Retry the record
                         } else {
                             console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
@@ -648,7 +657,7 @@ async function loginAndProcess(data, options = {}) {
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
-                            processingAttempt++;
+                            // Don't increment here - let the main loop handle it
                             continue; // Retry the record
                         } else {
                             console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
@@ -683,9 +692,27 @@ async function loginAndProcess(data, options = {}) {
                     }
                 }
                 
-                // Increment attempt counter for non-crash errors
+                // Always increment attempt counter at end of loop iteration
+                // This ensures proper retry counting and prevents infinite loops
                 if (!recordProcessed) {
                     processingAttempt++;
+                    if (processingAttempt > maxProcessingAttempts) {
+                        console.log(`  ❌ Max processing attempts (${maxProcessingAttempts}) exceeded for: ${record['Client Name']}`);
+                        record.status = 'error';
+                        record.Submitted = 'Error - Max Retry Attempts';
+                        record.InvoiceNumber = 'Error';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Maximum processing attempts exceeded',
+                            timestamp: new Date().toISOString(),
+                            context: 'max_attempts_exceeded',
+                            attempt: processingAttempt - 1,
+                            maxAttempts: maxProcessingAttempts
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
+                        recordProcessed = true;
+                    }
                 }
             }
             
@@ -3282,10 +3309,27 @@ async function processRecordsWithSession(session, data, options = {}) {
     try {
         console.log('📋 Navigating to Quick Submit form...');
         
-        // Validate session before navigation
-        const sessionValidation = await browserManager.validateSessionState(session.sessionId, page);
+        // Validate session before navigation with automatic recovery
+        const sessionValidation = await browserManager.validateAndRecoverSession(
+            session.sessionId, 
+            page, 
+            { 
+                allowRecovery: true, 
+                maxRecoveryAttempts: 1,
+                operation: 'quick_submit_navigation'
+            }
+        );
+        
         if (!sessionValidation.isValid) {
-            throw new Error(`Session validation failed before navigation: ${sessionValidation.errors.join(', ')}`);
+            console.log(`⚠️ Session validation failed for navigation: ${sessionValidation.errors.join(', ')}`);
+            if (!sessionValidation.recovered) {
+                const sessionError = new Error(`Session validation and recovery failed: ${sessionValidation.errors.join(', ')}`);
+                sessionError.recoverable = true;
+                sessionError.sessionValidation = sessionValidation;
+                throw sessionError;
+            } else {
+                console.log('✅ Session recovered successfully, proceeding with navigation');
+            }
         }
         
         await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3449,10 +3493,21 @@ async function processRecordsWithSession(session, data, options = {}) {
                             // Navigate back to Quick Submit form after F5 refresh
                             console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
                             
-                            // Validate session before navigation
-                            const sessionValidationAfterRefresh = await browserManager.validateSessionState(session.sessionId, page);
-                            if (!sessionValidationAfterRefresh.isValid) {
-                                throw new Error(`Session validation failed before navigation after refresh: ${sessionValidationAfterRefresh.errors.join(', ')}`);
+                            // Validate session before navigation with automatic recovery
+                            const sessionValidationAfterRefresh = await browserManager.validateAndRecoverSession(
+                                session.sessionId, 
+                                page, 
+                                { 
+                                    allowRecovery: true, 
+                                    maxRecoveryAttempts: 1,
+                                    operation: 'post_refresh_navigation'
+                                }
+                            );
+                            
+                            if (!sessionValidationAfterRefresh.isValid && !sessionValidationAfterRefresh.recovered) {
+                                console.log(`⚠️ Session validation failed after refresh: ${sessionValidationAfterRefresh.errors.join(', ')}`);
+                                // Continue with processing as this may be a transient issue
+                                console.log('🔄 Continuing with form processing despite validation warning');
                             }
                             
                             await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3637,10 +3692,21 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 // Navigate back to Quick Submit form after F5 refresh
                                 console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
                                 
-                                // Validate session before navigation
-                                const sessionValidationBeforeRetry = await browserManager.validateSessionState(session.sessionId, page);
-                                if (!sessionValidationBeforeRetry.isValid) {
-                                    throw new Error(`Session validation failed before retry navigation: ${sessionValidationBeforeRetry.errors.join(', ')}`);
+                                // Validate session before navigation with automatic recovery
+                                const sessionValidationBeforeRetry = await browserManager.validateAndRecoverSession(
+                                    session.sessionId, 
+                                    page, 
+                                    { 
+                                        allowRecovery: true, 
+                                        maxRecoveryAttempts: 1,
+                                        operation: 'client_creation_retry_navigation'
+                                    }
+                                );
+                                
+                                if (!sessionValidationBeforeRetry.isValid && !sessionValidationBeforeRetry.recovered) {
+                                    console.log(`⚠️ Session validation failed before retry: ${sessionValidationBeforeRetry.errors.join(', ')}`);
+                                    // Continue with processing as this may be a transient issue
+                                    console.log('🔄 Continuing with client creation retry despite validation warning');
                                 }
                                 
                                 await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3678,10 +3744,21 @@ async function processRecordsWithSession(session, data, options = {}) {
                     // Refresh form page after successful submission to ensure clean state for next record
                     console.log('  🔄 Refreshing form page to start fresh...');
                     
-                    // Validate session before navigation
-                    const sessionValidationBeforeRefresh = await browserManager.validateSessionState(session.sessionId, page);
-                    if (!sessionValidationBeforeRefresh.isValid) {
-                        throw new Error(`Session validation failed before form refresh navigation: ${sessionValidationBeforeRefresh.errors.join(', ')}`);
+                    // Validate session before navigation with automatic recovery
+                    const sessionValidationBeforeRefresh = await browserManager.validateAndRecoverSession(
+                        session.sessionId, 
+                        page, 
+                        { 
+                            allowRecovery: true, 
+                            maxRecoveryAttempts: 1,
+                            operation: 'form_refresh_navigation'
+                        }
+                    );
+                    
+                    if (!sessionValidationBeforeRefresh.isValid && !sessionValidationBeforeRefresh.recovered) {
+                        console.log(`⚠️ Session validation failed before refresh: ${sessionValidationBeforeRefresh.errors.join(', ')}`);
+                        // Continue with processing as this may be a transient issue
+                        console.log('🔄 Continuing with form refresh despite validation warning');
                     }
                     
                     await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3711,8 +3788,14 @@ async function processRecordsWithSession(session, data, options = {}) {
                 } catch (e) {
                     console.error(`Error processing record for ${record['Client Name']}:`, e);
                     
+                    // Check if this is a form validation failure (recoverable)
+                    if (e.formValidationFailure) {
+                        console.log(`  📋 Form validation failure for ${record['Client Name']} - will retry`);
+                        // Let the retry loop handle this - don't set recordProcessed to true
+                        continue;
+                    }
                     // Check if this is a browser crash or timeout
-                    if (isBrowserCrashed(e)) {
+                    else if (isBrowserCrashed(e)) {
                         console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
                         
                         // Attempt to recover from browser crash
@@ -3720,7 +3803,7 @@ async function processRecordsWithSession(session, data, options = {}) {
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
-                            processingAttempt++;
+                            // Don't increment here - let the main loop handle it
                             continue; // Retry the record
                         } else {
                             console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
@@ -3745,7 +3828,7 @@ async function processRecordsWithSession(session, data, options = {}) {
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
-                            processingAttempt++;
+                            // Don't increment here - let the main loop handle it
                             continue; // Retry the record
                         } else {
                             console.log(`  ❌ Recovery failed or max attempts reached for: ${record['Client Name']}`);
@@ -3780,9 +3863,27 @@ async function processRecordsWithSession(session, data, options = {}) {
                     }
                 }
                 
-                // Increment attempt counter for non-crash errors
+                // Always increment attempt counter at end of loop iteration
+                // This ensures proper retry counting and prevents infinite loops
                 if (!recordProcessed) {
                     processingAttempt++;
+                    if (processingAttempt > maxProcessingAttempts) {
+                        console.log(`  ❌ Max processing attempts (${maxProcessingAttempts}) exceeded for: ${record['Client Name']}`);
+                        record.status = 'error';
+                        record.Submitted = 'Error - Max Retry Attempts';
+                        record.InvoiceNumber = 'Error';
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Maximum processing attempts exceeded',
+                            timestamp: new Date().toISOString(),
+                            context: 'max_attempts_exceeded',
+                            attempt: processingAttempt - 1,
+                            maxAttempts: maxProcessingAttempts
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
+                        recordProcessed = true;
+                    }
                 }
             }
             

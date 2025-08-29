@@ -782,25 +782,37 @@ class JobManager extends EventEmitter {
 
                     } catch (batchError) {
                         console.error(`Error processing batch ${batchIndex + 1}:`, batchError);
-                        job.errors.push({
-                            batch: batchIndex + 1,
-                            message: batchError.message,
-                            timestamp: new Date().toISOString(),
-                            context: 'batch_processing',
-                            stack: batchError.stack || null
-                        });
                         
                         // Classify the error to determine if it's recoverable
                         const classifiedBatchError = ErrorClassifier.classify(batchError, {
                             operation: 'batch_processing',
                             jobId: job.id,
-                            batchIndex: batchIndex + 1
+                            batchIndex: batchIndex + 1,
+                            attempt: 1,
+                            maxAttempts: 2 // Allow one retry per batch
                         });
                         
-                        // Check if this is a browser session termination or crash that we can recover from
-                        if (classifiedBatchError instanceof BrowserCrashError || 
-                            classifiedBatchError instanceof BrowserSessionTerminatedError ||
-                            classifiedBatchError.recoverable) {
+                        // Add classified error to job errors
+                        job.errors.push({
+                            batch: batchIndex + 1,
+                            message: classifiedBatchError.message,
+                            timestamp: new Date().toISOString(),
+                            context: classifiedBatchError.type || 'batch_processing',
+                            errorType: classifiedBatchError.name,
+                            recoverable: classifiedBatchError.recoverable || false,
+                            retryStrategy: classifiedBatchError.retryStrategy,
+                            stack: batchError.stack || null
+                        });
+                        
+                        // Get retry recommendation based on error type
+                        const retryRecommendation = ErrorClassifier.getRetryRecommendation(classifiedBatchError, 1);
+                        console.log(`🔍 Retry recommendation for batch ${batchIndex + 1}: ${JSON.stringify(retryRecommendation)}`);
+                        
+                        // Check if error is recoverable and we should retry
+                        if (retryRecommendation.shouldRetry && 
+                            (classifiedBatchError instanceof BrowserCrashError || 
+                             classifiedBatchError instanceof BrowserSessionTerminatedError ||
+                             classifiedBatchError.recoverable)) {
                             
                             console.log(`🔄 ${classifiedBatchError.name} detected, attempting to recover...`);
                             
@@ -822,12 +834,22 @@ class JobManager extends EventEmitter {
                             });
                             
                             try {
-                                // Enhanced cleanup based on error type
+                                // Enhanced cleanup based on error type and retry strategy
+                                const cleanupDelay = retryRecommendation.delay || 1000;
+                                console.log(`⏳ Waiting ${cleanupDelay}ms before cleanup (strategy: ${retryRecommendation.strategy})`);
+                                await new Promise(resolve => setTimeout(resolve, cleanupDelay));
+                                
                                 if (classifiedBatchError instanceof BrowserSessionTerminatedError) {
-                                    console.log(`🔄 Handling browser session termination (reason: ${classifiedBatchError.terminalReason})`);
+                                    console.log(`🔄 Handling ${classifiedBatchError.terminalReason} session termination with ${classifiedBatchError.retryStrategy} strategy`);
+                                    
+                                    // Apply termination-specific cleanup delay
+                                    if (classifiedBatchError.retryDelay > cleanupDelay) {
+                                        const additionalDelay = classifiedBatchError.retryDelay - cleanupDelay;
+                                        console.log(`⏳ Additional cleanup delay for termination: ${additionalDelay}ms`);
+                                        await new Promise(resolve => setTimeout(resolve, additionalDelay));
+                                    }
                                     
                                     // For session termination, browser is likely already closed
-                                    // Just ensure proper cleanup without attempting close
                                     if (session && session.browser) {
                                         try {
                                             if (session.browser.isConnected()) {
@@ -841,7 +863,9 @@ class JobManager extends EventEmitter {
                                         }
                                     }
                                 } else {
-                                    // Traditional crash handling
+                                    // Traditional crash handling with retry strategy awareness
+                                    console.log(`🔄 Handling ${classifiedBatchError.name} with ${retryRecommendation.strategy} strategy`);
+                                    
                                     if (session && session.browser) {
                                         try {
                                             await session.browser.close();
@@ -852,16 +876,22 @@ class JobManager extends EventEmitter {
                                     }
                                 }
                                 
-                                // Create a new login session with recovery strategy based on error type
-                                if (classifiedBatchError instanceof BrowserSessionTerminatedError && 
-                                    classifiedBatchError.terminalReason === 'race_condition') {
-                                    console.log('🔑 Creating new login session after race condition...');
-                                    // Wait a bit longer for race condition scenarios to settle
-                                    await new Promise(resolve => setTimeout(resolve, 3000));
-                                } else {
-                                    console.log('🔑 Creating new login session after crash...');
-                                    // Standard delay for other error types
-                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                // Create a new login session with enhanced recovery strategy
+                                const recoveryDelay = classifiedBatchError.retryDelay || retryRecommendation.delay || 1000;
+                                console.log(`🔑 Creating new login session using ${retryRecommendation.strategy} strategy (delay: ${recoveryDelay}ms)`);
+                                
+                                // Apply strategy-specific delay if not already applied
+                                if (retryRecommendation.strategy === 'progressive_backoff' || 
+                                    classifiedBatchError.retryStrategy === 'progressive_backoff') {
+                                    const progressiveDelay = Math.min(recoveryDelay * 2, 10000); // Cap at 10s
+                                    console.log(`⏳ Progressive backoff delay: ${progressiveDelay}ms`);
+                                    await new Promise(resolve => setTimeout(resolve, progressiveDelay));
+                                } else if (!cleanupDelay || cleanupDelay < recoveryDelay) {
+                                    const remainingDelay = Math.max(recoveryDelay - (cleanupDelay || 0), 0);
+                                    if (remainingDelay > 0) {
+                                        console.log(`⏳ Additional recovery delay: ${remainingDelay}ms`);
+                                        await new Promise(resolve => setTimeout(resolve, remainingDelay));
+                                    }
                                 }
                                 
                                 session = await loginAndCreateSession();
@@ -919,13 +949,15 @@ class JobManager extends EventEmitter {
                                     recovered: true
                                 });
 
-                                // Send recovery success status update
+                                // Send enhanced recovery success status update
                                 await this.sendStatusUpdate(job.id, {
-                                    status: 'crash_recovery_success',
-                                    message: `Batch ${batchIndex + 1} recovered successfully after crash`,
+                                    status: 'batch_recovery_success',
+                                    message: `Batch ${batchIndex + 1} recovered successfully using ${retryRecommendation.strategy} strategy`,
                                     batchCompleted: batchIndex + 1,
                                     totalBatches: batches.length,
-                                    recovered: true
+                                    recovered: true,
+                                    recoveryStrategy: retryRecommendation.strategy,
+                                    errorType: classifiedBatchError.name
                                 });
                                 
                             } catch (recoveryError) {
@@ -940,21 +972,50 @@ class JobManager extends EventEmitter {
                                     stack: recoveryError.stack || null
                                 });
                                 
-                                // Send recovery failure status update with all accumulated errors
-                                await this.sendStatusUpdate(job.id, {
-                                    status: 'recovery_failed',
-                                    message: `Recovery failed for batch ${batchIndex + 1}: ${recoveryError.message}`,
+                                // Classify the recovery error and send enhanced failure update
+                                const classifiedRecoveryError = ErrorClassifier.classify(recoveryError, {
+                                    operation: 'batch_recovery',
+                                    jobId: job.id,
                                     batchIndex: batchIndex + 1,
-                                    error: recoveryError.message,
-                                    errors: job.errors.length > 0 ? job.errors : null
+                                    originalError: classifiedBatchError
+                                });
+                                
+                                await this.sendStatusUpdate(job.id, {
+                                    status: 'batch_recovery_failed',
+                                    message: `Batch ${batchIndex + 1} recovery failed: ${recoveryError.message}`,
+                                    batchIndex: batchIndex + 1,
+                                    error: classifiedRecoveryError.toJSON ? classifiedRecoveryError.toJSON() : recoveryError.message,
+                                    originalError: classifiedBatchError.toJSON ? classifiedBatchError.toJSON() : classifiedBatchError.message,
+                                    recoveryStrategy: retryRecommendation.strategy,
+                                    errors: job.errors.length > 0 ? job.errors.slice(-10) : null // Last 10 errors
                                 });
                                 
                                 // Stop processing if recovery fails
                                 throw new Error(`Browser crash recovery failed for batch ${batchIndex + 1}: ${recoveryError.message}`);
                             }
                         } else {
-                            // Non-crash error, continue with next batch
-                            console.log('⚠️ Non-critical error, continuing with next batch');
+                            // Non-recoverable error or retry not recommended
+                            if (!retryRecommendation.shouldRetry) {
+                                console.log(`❌ Error not retryable (${retryRecommendation.reason}), continuing with next batch`);
+                                
+                                await this.sendStatusUpdate(job.id, {
+                                    status: 'batch_error_non_retryable',
+                                    message: `Batch ${batchIndex + 1} failed with non-retryable error: ${classifiedBatchError.message}`,
+                                    batchIndex: batchIndex + 1,
+                                    error: classifiedBatchError.toJSON ? classifiedBatchError.toJSON() : classifiedBatchError.message,
+                                    retryReason: retryRecommendation.reason
+                                });
+                            } else {
+                                console.log(`⚠️ Recoverable error but retry conditions not met, continuing with next batch`);
+                                
+                                await this.sendStatusUpdate(job.id, {
+                                    status: 'batch_error_retry_skipped',
+                                    message: `Batch ${batchIndex + 1} error: ${classifiedBatchError.message}`,
+                                    batchIndex: batchIndex + 1,
+                                    error: classifiedBatchError.toJSON ? classifiedBatchError.toJSON() : classifiedBatchError.message,
+                                    skipReason: 'retry_conditions_not_met'
+                                });
+                            }
                         }
                     }
                 }
