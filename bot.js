@@ -261,8 +261,12 @@ async function loginAndProcess(data, options = {}) {
                     formState.tourOperator = record['Tour Operator'];
                     formState.startDate = formatDate(record['Booking Start Date']);
                     formState.endDate = formatDate(record['Booking End Date']);
-                    formState.packagePrice = record['Package Price'].replace(/,/g, '');
-                    formState.expectedCommission = record['Commission Projected'].replace(/,/g, '');
+                    console.log(`📊 Raw Package Price: "${record['Package Price']}" (type: ${typeof record['Package Price']})`);
+                    formState.packagePrice = cleanCurrencyValue(record['Package Price']);
+                    console.log(`📊 Cleaned Package Price: "${formState.packagePrice}"`);
+                    console.log(`📊 Raw Commission: "${record['Commission Projected']}" (type: ${typeof record['Commission Projected']})`);
+                    formState.expectedCommission = cleanCurrencyValue(record['Commission Projected']);
+                    console.log(`📊 Cleaned Commission: "${formState.expectedCommission}"`);
                 }
                 
                 const titleSelector = await findDynamicSelector(page, 'reservation_title');
@@ -502,31 +506,50 @@ async function loginAndProcess(data, options = {}) {
                             console.log(`  - Setting end date: ${formState.endDate}`);
                             await fillAndValidateField(page, 'end_date', formState.endDate, 'End Date');
 
-                            // 8. Fill Package Price with validation
+                            // 8. Fill Package Price with validation (IMPORTANT FIELD)
                             try {
                                 console.log(`  - Setting package price: ${formState.packagePrice}`);
                                 await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
+                                console.log('  ✅ Package Price field populated successfully');
                             } catch (e) {
-                                console.log(`  ⚠️  Warning: Package Price filling failed: ${e.message}`);
+                                console.error(`  ❌ ERROR: Package Price filling failed: ${e.message}`);
+                                // Package Price is important but not as critical as commission - log as error but don't fail the record
+                                console.error('  ⚠️ Package Price failure may affect form submission accuracy');
                             }
 
-                            // 9. Fill Expected Commission with validation
+                            // 9. Fill Expected Commission with validation (CRITICAL FIELD)
                             try {
                                 console.log(`  - Setting expected commission: ${formState.expectedCommission}`);
                                 await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
+                                console.log('  ✅ Expected Commission field populated successfully');
                             } catch (e) {
-                                console.log(`  ⚠️  Warning: Expected Commission filling failed: ${e.message}`);
+                                console.error(`  ❌ CRITICAL ERROR: Expected Commission filling failed: ${e.message}`);
+                                // Commission is a required business field - treat failure as critical
+                                const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
+                                commissionError.recoverable = true;
+                                commissionError.fieldName = 'Expected Commission';
+                                commissionError.criticalField = true;
+                                throw commissionError;
                             }
 
-                            // 10. Verify all form fields are populated before submission
-                            const formValid = await verifyFormState(page, formState);
-                            if (!formValid) {
-                                console.log('  ⚠️  Form validation failed, fields may be incomplete');
-                                // Don't throw - instead mark this attempt as failed and let retry logic handle it
-                                const validationError = new Error('Form validation failed - incomplete fields detected');
+                            // 10. Comprehensive validation of all required fields before submission
+                            console.log('  🔍 Performing comprehensive field validation...');
+                            const validationResults = await validateRequiredFields(page, formState);
+                            
+                            if (!validationResults.allValid) {
+                                console.error(`  ❌ CRITICAL: Required fields validation failed!`);
+                                console.error(`  📊 Success: ${validationResults.successCount}, Failed: ${validationResults.failureCount}`);
+                                console.error(`  🚫 Missing fields: ${validationResults.missingFields.join(', ')}`);
+                                
+                                // This is critical - required fields must be populated for successful submission
+                                const validationError = new Error(`Required fields validation failed: ${validationResults.missingFields.join(', ')} - Total failures: ${validationResults.failureCount}`);
                                 validationError.recoverable = true;
                                 validationError.formValidationFailure = true;
+                                validationError.missingFields = validationResults.missingFields;
+                                validationError.validationDetails = validationResults;
                                 throw validationError;
+                            } else {
+                                console.log(`  ✅ All required fields validated successfully (${validationResults.successCount}/${Object.keys(validationResults.populatedFields).length + validationResults.failureCount})`);
                             }
                             
                             // 11. Submit the form with human-like interaction
@@ -2082,6 +2105,84 @@ function formatDate(dateString) {
     }
 }
 
+// Helper function to clean and validate currency values
+function cleanCurrencyValue(value) {
+    if (!value) {
+        console.warn('Currency value is empty or undefined');
+        return '';
+    }
+    
+    try {
+        // Convert to string if it's not already
+        let cleanValue = String(value);
+        
+        // Remove currency symbols, spaces, and common formatting
+        cleanValue = cleanValue
+            .replace(/[$£€¥₹]/g, '')  // Remove currency symbols
+            .replace(/[,\s]/g, '')     // Remove commas and spaces
+            .replace(/[^\d.-]/g, '')   // Keep only digits, dots, and minus signs
+            .trim();
+        
+        // Validate that it's a valid number
+        if (cleanValue === '' || isNaN(cleanValue)) {
+            console.warn(`Invalid currency value after cleaning: "${value}" -> "${cleanValue}"`);
+            return '';
+        }
+        
+        // Convert to number and back to string to normalize format
+        const numValue = parseFloat(cleanValue);
+        if (numValue < 0) {
+            console.warn(`Negative currency value detected: ${numValue}`);
+        }
+        
+        // Return as string with proper decimal formatting
+        return numValue.toFixed(2);
+    } catch (error) {
+        console.error('Error cleaning currency value:', error);
+        return '';
+    }
+}
+
+// Helper function to detect if a field is a currency field based on DOM attributes
+async function isCurrencyFieldType(page, selector) {
+    try {
+        const fieldInfo = await page.evaluate((sel) => {
+            const element = document.querySelector(sel);
+            if (!element) return null;
+            
+            return {
+                classes: element.className || '',
+                id: element.id || '',
+                name: element.name || '',
+                type: element.type || '',
+                placeholder: element.placeholder || '',
+                dataField: element.getAttribute('data-field') || ''
+            };
+        }, selector);
+        
+        if (!fieldInfo) return false;
+        
+        // Check for currency field indicators
+        const currencyIndicators = [
+            'currency', 'price', 'cost', 'amount', 'total', 'commission',
+            'zc_currency_field', 'zc_numberfield'
+        ];
+        
+        const fieldText = (
+            fieldInfo.classes + ' ' +
+            fieldInfo.id + ' ' +
+            fieldInfo.name + ' ' +
+            fieldInfo.placeholder + ' ' +
+            fieldInfo.dataField
+        ).toLowerCase();
+        
+        return currencyIndicators.some(indicator => fieldText.includes(indicator));
+    } catch (error) {
+        console.warn(`Could not detect currency field type: ${error.message}`);
+        return false;
+    }
+}
+
 // Helper function to fill and validate form fields with human-like interactions
 async function fillAndValidateField(page, fieldType, value, fieldName, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -2097,8 +2198,15 @@ async function fillAndValidateField(page, fieldType, value, fieldName, maxRetrie
                 throw new Error(`Could not find selector for ${fieldType}`);
             }
             
-            // Determine if this is a date field by field type
+            // Determine field types for special handling
             const isDateField = fieldType === 'start_date' || fieldType === 'end_date';
+            const isCurrencyFieldByType = fieldType === 'total_price' || fieldType === 'expected_commission';
+            const isCurrencyFieldByDOM = await isCurrencyFieldType(page, selector);
+            const isCurrencyField = isCurrencyFieldByType || isCurrencyFieldByDOM;
+            
+            if (isCurrencyFieldByDOM && !isCurrencyFieldByType) {
+                console.log(`    💰 Detected currency field by DOM analysis: ${selector}`);
+            }
             
             if (isDateField) {
                 // For date fields, ONLY use page.fill() - NO clicking to prevent calendar popup
@@ -2106,9 +2214,32 @@ async function fillAndValidateField(page, fieldType, value, fieldName, maxRetrie
                 await page.fill(selector, ''); // Clear first
                 await page.fill(selector, value); // Then fill
                 await page.waitForTimeout(500 + Math.random() * 300);
+            } else if (isCurrencyField) {
+                // For currency fields, use enhanced filling with validation
+                console.log(`    💰 Using enhanced fill for currency field: ${selector}`);
+                console.log(`    💰 Currency value to fill: "${value}"`);
+                
+                // Validate the value before filling
+                if (!value || value === '') {
+                    console.warn(`    ⚠️  Empty currency value for ${fieldName}`);
+                    throw new Error(`Empty currency value for ${fieldName}`);
+                }
+                
+                // Clear and fill with extra care for currency fields
+                await page.fill(selector, ''); // Clear first
+                await page.waitForTimeout(100); // Brief pause
+                await page.fill(selector, value); // Then fill
+                await page.waitForTimeout(400 + Math.random() * 200); // Extra time for currency validation
+                
+                // Trigger blur to ensure validation
+                await page.evaluate((sel) => {
+                    const element = document.querySelector(sel);
+                    if (element) element.blur();
+                }, selector);
+                await page.waitForTimeout(200);
             } else {
-                // For non-date fields, use reliable fill method
-                console.log(`    💰 Using reliable fill for field: ${selector}`);
+                // For other fields, use reliable fill method
+                console.log(`    📝 Using reliable fill for field: ${selector}`);
                 await page.fill(selector, ''); // Clear first
                 await page.fill(selector, value); // Then fill
                 await page.waitForTimeout(300 + Math.random() * 200);
@@ -2121,21 +2252,56 @@ async function fillAndValidateField(page, fieldType, value, fieldName, maxRetrie
                 return true;
             } else {
                 console.log(`    ⚠️  ${fieldName} validation failed. Expected: "${value}", Got: "${actualValue}"`);
+                
+                // Enhanced logging for currency fields
+                if (isCurrencyField) {
+                    console.log(`    💰 Currency field debugging:`);
+                    console.log(`    💰   - Field Type: ${fieldType}`);
+                    console.log(`    💰   - Selector: ${selector}`);
+                    console.log(`    💰   - Expected: "${value}" (length: ${value.length})`);
+                    console.log(`    💰   - Actual: "${actualValue}" (length: ${actualValue.length})`);
+                    
+                    // Check if field has validation errors
+                    try {
+                        const hasError = await page.evaluate((sel) => {
+                            const element = document.querySelector(sel);
+                            return element ? {
+                                hasError: element.classList.contains('error') || element.classList.contains('invalid'),
+                                classes: element.className,
+                                validationMessage: element.validationMessage,
+                                required: element.required
+                            } : null;
+                        }, selector);
+                        
+                        if (hasError) {
+                            console.log(`    💰   - Field state: ${JSON.stringify(hasError)}`);
+                        }
+                    } catch (e) {
+                        console.log(`    💰   - Could not check field state: ${e.message}`);
+                    }
+                }
+                
                 if (attempt === maxRetries) {
                     console.log(`    ❌ ${fieldName} failed after ${maxRetries} attempts`);
-                    return false;
+                    if (isCurrencyField) {
+                        console.log(`    💰 CRITICAL: Currency field population failed - this may cause form submission issues`);
+                    }
+                    // Instead of returning false, throw an error for proper error handling
+                    throw new Error(`${fieldName} field validation failed after ${maxRetries} attempts. Expected: "${value}", Got: "${actualValue}"`);
                 }
                 await page.waitForTimeout(1000);
             }
         } catch (error) {
             console.log(`    💥 Error filling ${fieldName} (attempt ${attempt}): ${error.message}`);
             if (attempt === maxRetries) {
-                return false;
+                // Throw the error instead of returning false for better error handling
+                throw new Error(`${fieldName} field population failed: ${error.message}`);
             }
             await page.waitForTimeout(1000);
         }
     }
-    return false;
+    // This should never be reached due to the throw above, but keeping as fallback
+    throw new Error(`${fieldName} field population failed after ${maxRetries} attempts`);
 }
 
 // Helper function to select region with validation
@@ -2321,10 +2487,19 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
         ],
         'total_price': [
             '#zc-Total_Price',
+            '.zc-Total_Price',
             '[name*="Total_Price"]',
+            'input[name="Total_Price"]',
+            'input.zc_currency_field',
+            'input.form-control.zc_numberfield.zc_currency_field',
             'input[placeholder*="Total Price"]',
+            'input[placeholder*="total price"]',
             'input[label*="Total Price"]',
-            'input[data-field*="Total_Price"]'
+            'input[data-field*="Total_Price"]',
+            'input[class*="Total_Price"]',
+            'input[class*="total_price"]',
+            'input[type="text"][class*="currency"]',
+            'input[type="number"][class*="currency"]'
         ],
         'expected_commission': [
             '#zc-Expected_Commission',
@@ -2393,8 +2568,24 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
                             return selector;
                         }
                     } else {
-                        // For non-input fields, just check visibility
-                        console.log(`    ✅ Found dynamic selector for ${fieldType}: ${selector}`);
+                        // For non-input fields, check visibility and log additional info for currency fields
+                        const isEnabled = await element.isEnabled({ timeout: 1000 });
+                        if (!isEnabled) continue;
+                        
+                        // Enhanced logging for currency fields
+                        if (fieldType === 'total_price' || fieldType === 'expected_commission') {
+                            const elementInfo = await element.evaluate((el) => ({
+                                id: el.id,
+                                name: el.name,
+                                classes: el.className,
+                                type: el.type,
+                                required: el.required
+                            }));
+                            console.log(`    💰 Found currency field selector for ${fieldType}: ${selector}`);
+                            console.log(`    💰 Element details:`, JSON.stringify(elementInfo));
+                        } else {
+                            console.log(`    ✅ Found dynamic selector for ${fieldType}: ${selector}`);
+                        }
                         return selector;
                     }
                 }
@@ -2409,48 +2600,459 @@ async function findDynamicSelector(page, fieldType, maxRetries = 3) {
         }
     }
     
-    console.log(`    ❌ Could not find dynamic selector for ${fieldType}`);
+    // Enhanced error logging for currency fields
+    if (fieldType === 'total_price' || fieldType === 'expected_commission') {
+        console.log(`    💰 CRITICAL: Could not find dynamic selector for currency field ${fieldType}`);
+        console.log(`    💰 Attempted selectors:`, selectors);
+        
+        // Try to find any currency-related fields on the page for debugging
+        try {
+            const currencyFields = await page.$$eval('input', (inputs) => {
+                return inputs.filter(input => {
+                    const text = (input.className + ' ' + input.id + ' ' + input.name + ' ' + input.placeholder).toLowerCase();
+                    return text.includes('price') || text.includes('total') || text.includes('currency') || text.includes('commission');
+                }).map(input => ({
+                    tag: input.tagName,
+                    id: input.id,
+                    name: input.name,
+                    classes: input.className,
+                    placeholder: input.placeholder,
+                    type: input.type
+                }));
+            });
+            
+            if (currencyFields.length > 0) {
+                console.log(`    💰 Found ${currencyFields.length} potential currency fields on page:`, currencyFields);
+            } else {
+                console.log(`    💰 No currency-related fields found on page`);
+            }
+        } catch (debugError) {
+            console.log(`    💰 Could not debug currency fields: ${debugError.message}`);
+        }
+    } else {
+        console.log(`    ❌ Could not find dynamic selector for ${fieldType}`);
+    }
     return null;
 }
 
 // Helper function to ensure page is ready for next record
-async function ensurePageReady(page, maxRetries = 3) {
+async function ensurePageReady(page, maxRetries = 5) {
+    const progressiveTimeouts = [1000, 2000, 3000, 5000, 7000]; // Progressive timeout strategy
+    const retryDelays = [2000, 3000, 4000, 5000, 6000]; // Increasing delays between retries
+    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             console.log(`  🔄 Checking page state (attempt ${attempt}/${maxRetries})`);
             
-            // Wait for any overlays or popups to disappear
-            await page.waitForTimeout(2000);
+            const timeout = progressiveTimeouts[attempt - 1] || 7000;
+            const startTime = Date.now();
             
-            // Use dynamic selector detection for critical elements
-            const titleSelector = await findDynamicSelector(page, 'reservation_title');
-            const numberSelector = await findDynamicSelector(page, 'reservation_number');
+            // Step 1: Wait for initial page stabilization with progressive timeout
+            console.log(`  ⏳ Waiting ${timeout}ms for page stabilization...`);
+            await page.waitForTimeout(timeout);
             
-            if (!titleSelector || !numberSelector) {
-                throw new Error('Could not find critical form elements');
+            // Step 2: Check for and dismiss any blocking overlays/popups
+            await dismissBlockingElements(page);
+            
+            // Step 3: Multi-method element detection with fallbacks
+            const detectionResult = await detectCriticalElements(page, timeout);
+            
+            if (!detectionResult.success) {
+                throw new Error(`Element detection failed: ${detectionResult.reason}`);
             }
             
-            // Check if main form elements are accessible
-            await page.waitForSelector(titleSelector, { timeout: 5000, state: 'visible' });
-            await page.waitForSelector(numberSelector, { timeout: 5000, state: 'visible' });
+            // Step 4: Comprehensive page responsiveness tests
+            const responsivenessResult = await testPageResponsiveness(page, detectionResult.selectors, timeout);
             
-            // Try to interact with a simple element to verify page responsiveness
-            const titleElement = await page.locator(titleSelector);
-            await titleElement.focus({ timeout: 3000 });
+            if (!responsivenessResult.success) {
+                throw new Error(`Responsiveness test failed: ${responsivenessResult.reason}`);
+            }
             
-            console.log('  ✅ Page is ready for next record');
+            // Step 5: Final validation - ensure DOM is stable
+            const stabilityResult = await validateDOMStability(page, 1000);
+            
+            if (!stabilityResult.success) {
+                throw new Error(`DOM stability test failed: ${stabilityResult.reason}`);
+            }
+            
+            const totalTime = Date.now() - startTime;
+            console.log(`  ✅ Page is ready for next record (verified in ${totalTime}ms)`);
             return true;
             
         } catch (error) {
-            console.log(`  ⚠️  Page not ready (attempt ${attempt}): ${error.message}`);
+            const errorType = categorizePageReadinessError(error);
+            console.log(`  ⚠️  Page not ready (attempt ${attempt}/${maxRetries}): ${errorType.category} - ${error.message}`);
+            
+            // Log detailed error information for debugging
+            if (attempt === 1) {
+                await logPageDiagnostics(page);
+            }
+            
             if (attempt === maxRetries) {
-                console.log('  ❌ Page state verification failed');
+                console.log(`  ❌ Page state verification failed after ${maxRetries} attempts`);
+                console.log(`  🔍 Final error category: ${errorType.category}, Suggested action: ${errorType.suggestedAction}`);
                 return false;
             }
-            await page.waitForTimeout(3000);
+            
+            // Progressive retry delay
+            const retryDelay = retryDelays[attempt - 1] || 6000;
+            console.log(`  ⏳ Waiting ${retryDelay}ms before retry...`);
+            await page.waitForTimeout(retryDelay);
         }
     }
     return false;
+}
+
+// Helper function to dismiss blocking elements like overlays and popups
+async function dismissBlockingElements(page) {
+    console.log(`    🧹 Checking for blocking elements...`);
+    
+    // Common blocking element selectors
+    const blockingSelectors = [
+        '.modal-backdrop',
+        '.overlay',
+        '.popup',
+        '[role="dialog"]',
+        '.loading-spinner',
+        '.spinner',
+        '.loader',
+        '.toast',
+        '.notification'
+    ];
+    
+    for (const selector of blockingSelectors) {
+        try {
+            const elements = await page.locator(selector);
+            const count = await elements.count();
+            
+            if (count > 0) {
+                console.log(`    🚫 Found ${count} blocking elements: ${selector}`);
+                
+                // Try clicking close buttons
+                const closeButtons = page.locator(`${selector} .close, ${selector} .dismiss, ${selector} [data-dismiss]`);
+                const closeCount = await closeButtons.count();
+                
+                if (closeCount > 0) {
+                    await closeButtons.first().click({ timeout: 2000 });
+                    await page.waitForTimeout(500);
+                }
+            }
+        } catch (e) {
+            // Continue to next selector if this one fails
+        }
+    }
+}
+
+// Multi-method element detection with comprehensive fallbacks
+async function detectCriticalElements(page, timeout) {
+    console.log(`    🔍 Detecting critical elements with ${timeout}ms timeout...`);
+    
+    const detectionMethods = [
+        // Method 1: Dynamic selector detection (existing method)
+        async () => {
+            const titleSelector = await findDynamicSelector(page, 'reservation_title');
+            const numberSelector = await findDynamicSelector(page, 'reservation_number');
+            
+            if (titleSelector && numberSelector) {
+                return { 
+                    success: true, 
+                    method: 'dynamic_selector',
+                    selectors: { title: titleSelector, number: numberSelector }
+                };
+            }
+            return { success: false, reason: 'Dynamic selectors not found' };
+        },
+        
+        // Method 2: Form-based detection
+        async () => {
+            try {
+                await page.waitForSelector('form', { timeout: timeout / 2 });
+                
+                const forms = await page.locator('form');
+                const formCount = await forms.count();
+                
+                for (let i = 0; i < formCount; i++) {
+                    const form = forms.nth(i);
+                    const titleInput = form.locator('input[type="text"]:has-text("Title"), input[placeholder*="title" i], input[name*="title" i]').first();
+                    const numberInput = form.locator('input[type="text"]:has-text("Number"), input[placeholder*="number" i], input[name*="number" i]').first();
+                    
+                    if (await titleInput.count() > 0 && await numberInput.count() > 0) {
+                        const titleSelector = await titleInput.getAttribute('data-testid') || await titleInput.getAttribute('name') || 'input[placeholder*="title" i]';
+                        const numberSelector = await numberInput.getAttribute('data-testid') || await numberInput.getAttribute('name') || 'input[placeholder*="number" i]';
+                        
+                        return {
+                            success: true,
+                            method: 'form_detection',
+                            selectors: { title: titleSelector, number: numberSelector }
+                        };
+                    }
+                }
+            } catch (e) {
+                // Continue to next method
+            }
+            return { success: false, reason: 'Form-based detection failed' };
+        },
+        
+        // Method 3: Generic input field detection
+        async () => {
+            try {
+                const inputs = page.locator('input[type="text"], input:not([type])');
+                const inputCount = await inputs.count();
+                
+                if (inputCount >= 2) {
+                    // Look for inputs that are visible and interactable
+                    let visibleInputs = [];
+                    
+                    for (let i = 0; i < Math.min(inputCount, 10); i++) { // Check first 10 inputs
+                        const input = inputs.nth(i);
+                        if (await input.isVisible() && await input.isEnabled()) {
+                            visibleInputs.push(input);
+                        }
+                    }
+                    
+                    if (visibleInputs.length >= 2) {
+                        return {
+                            success: true,
+                            method: 'generic_input',
+                            selectors: { 
+                                title: 'input[type="text"]:visible:enabled',
+                                number: 'input[type="text"]:visible:enabled'
+                            }
+                        };
+                    }
+                }
+            } catch (e) {
+                // Continue to next method
+            }
+            return { success: false, reason: 'Generic input detection failed' };
+        }
+    ];
+    
+    // Try each detection method
+    for (const method of detectionMethods) {
+        try {
+            const result = await method();
+            if (result.success) {
+                console.log(`    ✅ Elements detected using ${result.method}`);
+                return result;
+            } else {
+                console.log(`    ⚠️  ${result.reason}`);
+            }
+        } catch (error) {
+            console.log(`    ❌ Detection method failed: ${error.message}`);
+        }
+    }
+    
+    return { success: false, reason: 'All detection methods failed' };
+}
+
+// Comprehensive page responsiveness testing
+async function testPageResponsiveness(page, selectors, timeout) {
+    console.log(`    🧪 Testing page responsiveness...`);
+    
+    const tests = [
+        // Test 1: Element visibility and state
+        async () => {
+            try {
+                await page.waitForSelector(selectors.title, { timeout: timeout, state: 'visible' });
+                await page.waitForSelector(selectors.number, { timeout: timeout, state: 'visible' });
+                return { success: true, test: 'visibility' };
+            } catch (e) {
+                return { success: false, test: 'visibility', reason: e.message };
+            }
+        },
+        
+        // Test 2: Element interactivity (focus/click)
+        async () => {
+            try {
+                const titleElement = page.locator(selectors.title).first();
+                
+                // Try multiple interaction types
+                const interactions = [
+                    () => titleElement.focus({ timeout: 2000 }),
+                    () => titleElement.hover({ timeout: 2000 }),
+                    () => titleElement.click({ timeout: 2000 })
+                ];
+                
+                let interactionWorked = false;
+                for (const interaction of interactions) {
+                    try {
+                        await interaction();
+                        interactionWorked = true;
+                        break;
+                    } catch (e) {
+                        // Try next interaction type
+                    }
+                }
+                
+                if (interactionWorked) {
+                    return { success: true, test: 'interaction' };
+                } else {
+                    return { success: false, test: 'interaction', reason: 'No interactions successful' };
+                }
+            } catch (e) {
+                return { success: false, test: 'interaction', reason: e.message };
+            }
+        },
+        
+        
+        // Test 3: JavaScript execution responsiveness
+        async () => {
+            try {
+                const testResult = await page.evaluate(() => {
+                    const start = performance.now();
+                    // Simple computation to test JS responsiveness
+                    let sum = 0;
+                    for (let i = 0; i < 1000; i++) {
+                        sum += i;
+                    }
+                    const end = performance.now();
+                    return { success: true, duration: end - start, result: sum };
+                });
+                
+                if (testResult.duration < 100) { // Should complete quickly
+                    return { success: true, test: 'js_responsiveness' };
+                } else {
+                    return { success: false, test: 'js_responsiveness', reason: `JS execution too slow: ${testResult.duration}ms` };
+                }
+            } catch (e) {
+                return { success: false, test: 'js_responsiveness', reason: e.message };
+            }
+        }
+    ];
+    
+    const results = [];
+    let allPassed = true;
+    
+    for (const test of tests) {
+        const result = await test();
+        results.push(result);
+        
+        if (result.success) {
+            console.log(`    ✅ ${result.test} test passed`);
+        } else {
+            console.log(`    ❌ ${result.test} test failed: ${result.reason}`);
+            allPassed = false;
+        }
+    }
+    
+    if (allPassed) {
+        return { success: true, results };
+    } else {
+        const failedTests = results.filter(r => !r.success).map(r => r.test).join(', ');
+        return { success: false, reason: `Failed tests: ${failedTests}`, results };
+    }
+}
+
+// DOM stability validation
+async function validateDOMStability(page, stabilityWindow = 1000) {
+    console.log(`    🏗️  Validating DOM stability over ${stabilityWindow}ms...`);
+    
+    try {
+        const initialState = await page.evaluate(() => ({
+            elementCount: document.querySelectorAll('*').length,
+            bodyChildren: document.body.children.length,
+            loading: document.readyState
+        }));
+        
+        await page.waitForTimeout(stabilityWindow);
+        
+        const finalState = await page.evaluate(() => ({
+            elementCount: document.querySelectorAll('*').length,
+            bodyChildren: document.body.children.length,
+            loading: document.readyState
+        }));
+        
+        const elementDiff = Math.abs(finalState.elementCount - initialState.elementCount);
+        const childrenDiff = Math.abs(finalState.bodyChildren - initialState.bodyChildren);
+        
+        // Allow for minor DOM changes (up to 5% or 10 elements)
+        const maxAllowedDiff = Math.max(10, initialState.elementCount * 0.05);
+        
+        if (elementDiff <= maxAllowedDiff && childrenDiff <= 3 && finalState.loading === 'complete') {
+            console.log(`    ✅ DOM is stable (±${elementDiff} elements, ±${childrenDiff} children)`);
+            return { success: true };
+        } else {
+            return { 
+                success: false, 
+                reason: `DOM unstable: ±${elementDiff} elements, ±${childrenDiff} children, readyState: ${finalState.loading}` 
+            };
+        }
+    } catch (e) {
+        return { success: false, reason: `DOM stability check failed: ${e.message}` };
+    }
+}
+
+// Categorize different types of page readiness errors
+function categorizePageReadinessError(error) {
+    const message = error.message.toLowerCase();
+    
+    if (message.includes('timeout') || message.includes('waiting')) {
+        return {
+            category: 'TIMEOUT',
+            suggestedAction: 'Increase wait times or check for slow loading resources'
+        };
+    } else if (message.includes('selector') || message.includes('element')) {
+        return {
+            category: 'ELEMENT_NOT_FOUND',
+            suggestedAction: 'Verify page structure or update selectors'
+        };
+    } else if (message.includes('interaction') || message.includes('focus') || message.includes('click')) {
+        return {
+            category: 'INTERACTION_FAILED',
+            suggestedAction: 'Check for overlays or disabled elements'
+        };
+    } else if (message.includes('stability') || message.includes('dom')) {
+        return {
+            category: 'DOM_UNSTABLE',
+            suggestedAction: 'Wait longer for dynamic content to settle'
+        };
+    } else if (message.includes('responsiveness') || message.includes('js')) {
+        return {
+            category: 'PAGE_UNRESPONSIVE',
+            suggestedAction: 'Check for JavaScript errors or performance issues'
+        };
+    } else {
+        return {
+            category: 'UNKNOWN',
+            suggestedAction: 'Review page state and error details'
+        };
+    }
+}
+
+// Log diagnostic information for debugging
+async function logPageDiagnostics(page) {
+    try {
+        console.log(`    🔍 Page Diagnostics:`);
+        
+        const diagnostics = await page.evaluate(() => {
+            return {
+                url: window.location.href,
+                title: document.title,
+                readyState: document.readyState,
+                elementCount: document.querySelectorAll('*').length,
+                inputCount: document.querySelectorAll('input').length,
+                formCount: document.querySelectorAll('form').length,
+                visibleInputCount: Array.from(document.querySelectorAll('input')).filter(el => 
+                    el.offsetParent !== null && !el.hidden && el.style.display !== 'none'
+                ).length,
+                hasErrors: !!window.onerror || !!document.querySelector('.error, .alert-danger'),
+                loadingElements: document.querySelectorAll('.loading, .spinner, .loader').length
+            };
+        });
+        
+        console.log(`      - URL: ${diagnostics.url}`);
+        console.log(`      - Title: ${diagnostics.title}`);
+        console.log(`      - Ready State: ${diagnostics.readyState}`);
+        console.log(`      - Total Elements: ${diagnostics.elementCount}`);
+        console.log(`      - Input Fields: ${diagnostics.inputCount} (${diagnostics.visibleInputCount} visible)`);
+        console.log(`      - Forms: ${diagnostics.formCount}`);
+        console.log(`      - Loading Elements: ${diagnostics.loadingElements}`);
+        console.log(`      - Has Errors: ${diagnostics.hasErrors}`);
+        
+    } catch (e) {
+        console.log(`    ⚠️  Could not gather page diagnostics: ${e.message}`);
+    }
 }
 
 // Helper function to retry client creation with page refresh and popup cleanup
@@ -2915,6 +3517,137 @@ async function submitFormHumanLike(page, maxRetries = 3) {
     };
 }
 
+// Comprehensive required fields validation system
+async function validateRequiredFields(page, formState) {
+    console.log('    🔍 Validating all required fields...');
+    
+    const requiredFields = {
+        'Client Name': {
+            fieldType: 'reservation_title',
+            expectedValue: formState.reservationTitle,
+            isRequired: true
+        },
+        'Booking Number': {
+            fieldType: 'reservation_number', 
+            expectedValue: formState.bookingNumber,
+            isRequired: true
+        },
+        'Start Date': {
+            fieldType: 'start_date',
+            expectedValue: formState.startDate,
+            isRequired: true
+        },
+        'End Date': {
+            fieldType: 'end_date',
+            expectedValue: formState.endDate,
+            isRequired: true
+        },
+        'Package Price': {
+            fieldType: 'total_price',
+            expectedValue: formState.packagePrice,
+            isRequired: true
+        },
+        'Commission Projected': {
+            fieldType: 'expected_commission',
+            expectedValue: formState.expectedCommission,
+            isRequired: true
+        },
+        'Tour Operator': {
+            fieldType: 'vendor_dropdown',
+            expectedValue: formState.tourOperator,
+            isRequired: true
+        }
+    };
+
+    const validationResults = {
+        allValid: true,
+        successCount: 0,
+        failureCount: 0,
+        missingFields: [],
+        populatedFields: [],
+        errors: []
+    };
+
+    for (const [fieldName, fieldConfig] of Object.entries(requiredFields)) {
+        try {
+            // Skip if field value is empty/null and field is required
+            if (fieldConfig.isRequired && (!fieldConfig.expectedValue || fieldConfig.expectedValue === '')) {
+                console.log(`    ❌ ${fieldName}: Missing expected value in formState`);
+                validationResults.failureCount++;
+                validationResults.missingFields.push(fieldName);
+                validationResults.errors.push(`${fieldName}: Missing expected value`);
+                validationResults.allValid = false;
+                continue;
+            }
+
+            // Find field selector
+            const selector = await findDynamicSelector(page, fieldConfig.fieldType);
+            if (!selector) {
+                console.log(`    ❌ ${fieldName}: Field selector not found`);
+                validationResults.failureCount++;
+                validationResults.missingFields.push(fieldName);
+                validationResults.errors.push(`${fieldName}: Field selector not found`);
+                validationResults.allValid = false;
+                continue;
+            }
+
+            // Get current field value
+            let currentValue = '';
+            try {
+                if (fieldConfig.fieldType === 'vendor_dropdown') {
+                    // For dropdown fields, check if option is selected
+                    const dropdownText = await page.textContent(selector).catch(() => '');
+                    currentValue = dropdownText.trim();
+                } else {
+                    // For input fields
+                    currentValue = await page.inputValue(selector);
+                }
+            } catch (e) {
+                console.log(`    ❌ ${fieldName}: Error reading field value - ${e.message}`);
+                validationResults.failureCount++;
+                validationResults.missingFields.push(fieldName);
+                validationResults.errors.push(`${fieldName}: Error reading field value`);
+                validationResults.allValid = false;
+                continue;
+            }
+
+            // Validate field value
+            const isPopulated = currentValue && currentValue.trim() !== '';
+            if (isPopulated) {
+                console.log(`    ✅ ${fieldName}: "${currentValue}"`);
+                validationResults.successCount++;
+                validationResults.populatedFields.push({
+                    name: fieldName,
+                    value: currentValue,
+                    expected: fieldConfig.expectedValue
+                });
+            } else {
+                console.log(`    ❌ ${fieldName}: Field is empty or not populated`);
+                validationResults.failureCount++;
+                validationResults.missingFields.push(fieldName);
+                validationResults.errors.push(`${fieldName}: Field is empty`);
+                validationResults.allValid = false;
+            }
+
+        } catch (error) {
+            console.log(`    ❌ ${fieldName}: Validation error - ${error.message}`);
+            validationResults.failureCount++;
+            validationResults.missingFields.push(fieldName);
+            validationResults.errors.push(`${fieldName}: ${error.message}`);
+            validationResults.allValid = false;
+        }
+    }
+
+    // Log validation summary
+    console.log(`    📊 Validation Summary: ${validationResults.successCount}/${Object.keys(requiredFields).length} fields populated`);
+    
+    if (!validationResults.allValid) {
+        console.log(`    ⚠️ Missing/Failed Fields: ${validationResults.missingFields.join(', ')}`);
+    }
+
+    return validationResults;
+}
+
 // Helper function to verify all form fields are populated correctly
 async function verifyFormState(page, expectedFormState) {
     try {
@@ -2975,7 +3708,7 @@ async function verifyFormState(page, expectedFormState) {
         }
         
         // Check price fields for debugging
-        const priceSelector = await findDynamicSelector(page, 'package_price');
+        const priceSelector = await findDynamicSelector(page, 'total_price');
         if (priceSelector) {
             const priceValue = await page.inputValue(priceSelector);
             console.log(`    📊 Package Price field: expected "${expectedFormState.packagePrice}", got "${priceValue}"`);
@@ -4192,8 +4925,8 @@ async function processRecordsWithSession(session, data, options = {}) {
                         formState.tourOperator = record['Tour Operator'];
                         formState.startDate = formatDate(record['Booking Start Date']);
                         formState.endDate = formatDate(record['Booking End Date']);
-                        formState.packagePrice = record['Package Price'].replace(/,/g, '');
-                        formState.expectedCommission = record['Commission Projected'].replace(/,/g, '');
+                        formState.packagePrice = cleanCurrencyValue(record['Package Price']);
+                        formState.expectedCommission = cleanCurrencyValue(record['Commission Projected']);
                     }
                     
                     const titleSelector = await findDynamicSelector(page, 'reservation_title');
@@ -4429,25 +5162,51 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 console.log(`  - Setting end date: ${formState.endDate}`);
                                 await fillAndValidateField(page, 'end_date', formState.endDate, 'End Date');
 
-                                // 8. Fill Package Price with validation
+                                // 8. Fill Package Price with validation (IMPORTANT FIELD)
                                 try {
                                     console.log(`  - Setting package price: ${formState.packagePrice}`);
                                     await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
+                                    console.log('  ✅ Package Price field populated successfully');
                                 } catch (e) {
-                                    console.log(`  ⚠️  Warning: Package Price filling failed: ${e.message}`);
+                                    console.error(`  ❌ ERROR: Package Price filling failed: ${e.message}`);
+                                    // Package Price is important but not as critical as commission - log as error but don't fail the record
+                                    console.error('  ⚠️ Package Price failure may affect form submission accuracy');
                                 }
 
-                                // 9. Fill Expected Commission with validation
+                                // 9. Fill Expected Commission with validation (CRITICAL FIELD)
                                 try {
                                     console.log(`  - Setting expected commission: ${formState.expectedCommission}`);
                                     await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
+                                    console.log('  ✅ Expected Commission field populated successfully');
                                 } catch (e) {
-                                    console.log(`  ⚠️  Warning: Expected Commission filling failed: ${e.message}`);
+                                    console.error(`  ❌ CRITICAL ERROR: Expected Commission filling failed: ${e.message}`);
+                                    // Commission is a required business field - treat failure as critical
+                                    const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
+                                    commissionError.recoverable = true;
+                                    commissionError.fieldName = 'Expected Commission';
+                                    commissionError.criticalField = true;
+                                    throw commissionError;
                                 }
 
-                                // 10. Log form state for debugging (no validation blocking)
-                                console.log('  🔍 Checking form state before submission...');
-                                await verifyFormState(page, formState); // Just for logging, don't check result
+                                // 10. Comprehensive validation of all required fields before submission
+                                console.log('  🔍 Performing comprehensive field validation...');
+                                const validationResults = await validateRequiredFields(page, formState);
+                                
+                                if (!validationResults.allValid) {
+                                    console.error(`  ❌ CRITICAL: Required fields validation failed!`);
+                                    console.error(`  📊 Success: ${validationResults.successCount}, Failed: ${validationResults.failureCount}`);
+                                    console.error(`  🚫 Missing fields: ${validationResults.missingFields.join(', ')}`);
+                                    
+                                    // This is critical - required fields must be populated for successful submission
+                                    const validationError = new Error(`Required fields validation failed: ${validationResults.missingFields.join(', ')} - Total failures: ${validationResults.failureCount}`);
+                                    validationError.recoverable = true;
+                                    validationError.formValidationFailure = true;
+                                    validationError.missingFields = validationResults.missingFields;
+                                    validationError.validationDetails = validationResults;
+                                    throw validationError;
+                                } else {
+                                    console.log(`  ✅ All required fields validated successfully (${validationResults.successCount}/${Object.keys(validationResults.populatedFields).length + validationResults.failureCount})`);
+                                }
                                 
                                 // 11. Submit the form with human-like interaction
                                 console.log('  - Submitting form...');
