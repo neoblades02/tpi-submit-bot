@@ -140,9 +140,17 @@ const config = {
         notifyOnErrors: parseArrayEnv('DISCORD_NOTIFY_ERRORS', [
             'browser_launch',
             'browser_crash',
+            'browser_timeout',
+            'processing_error',
+            'max_attempts_exceeded',
+            'form_validation_error',
+            'session_validation_error',
+            'page_readiness_error',
+            'client_creation_error',
             'resource_exhaustion',
             'circuit_breaker',
-            'job_failure'
+            'job_failure',
+            'all' // Include 'all' to catch any error type not explicitly listed
         ]),
         
         // Colors for different message types

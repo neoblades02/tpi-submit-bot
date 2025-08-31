@@ -24,6 +24,7 @@ class SystemMonitor extends EventEmitter {
         this.isMonitoring = false;
         this.monitoringInterval = null;
         this.browserInstances = new Map(); // Track browser instances and their resources
+        this.activeJobs = new Map(); // Track active jobs to prevent timeout of active browsers
         this.memoryHistory = [];
         this.lastGCTime = Date.now();
         this.warningsSent = new Set(); // Track warnings to avoid spam
@@ -154,7 +155,9 @@ class SystemMonitor extends EventEmitter {
             createdAt: Date.now(),
             context,
             pages: 0,
-            lastActivity: Date.now()
+            lastActivity: Date.now(),
+            activeJobId: null,
+            timeoutDeferred: false
         });
 
         return id;
@@ -189,7 +192,7 @@ class SystemMonitor extends EventEmitter {
         
         // Ensure browser is closed
         try {
-            if (instance.browser && !instance.browser.isConnected || !instance.browser.isClosed) {
+            if (instance.browser && !instance.browser.isClosed() && instance.browser.isConnected()) {
                 await instance.browser.close();
                 console.log(`🔐 Closed browser instance: ${id}`);
             }
@@ -212,7 +215,22 @@ class SystemMonitor extends EventEmitter {
             const age = now - instance.createdAt;
             const inactiveTime = now - instance.lastActivity;
             
-            if (age > timeoutThreshold || inactiveTime > timeoutThreshold) {
+            // Check if browser exceeds timeout thresholds
+            const exceededAge = age > timeoutThreshold;
+            const exceededInactivity = inactiveTime > timeoutThreshold;
+            
+            if (exceededAge || exceededInactivity) {
+                // Check if browser is actively being used by a job (with null safety)
+                const isActiveInJob = instance && instance.activeJobId && this.isJobActive(instance.activeJobId);
+                
+                if (isActiveInJob) {
+                    // Browser is actively being used - extend timeout and update activity
+                    console.log(`⏳ Browser instance ${id} timeout deferred - active in job ${instance.activeJobId} (age: ${Math.round(age/1000)}s, inactive: ${Math.round(inactiveTime/1000)}s)`);
+                    instance.lastActivity = now; // Reset activity timer
+                    instance.timeoutDeferred = true;
+                    continue;
+                }
+                
                 console.log(`⚠️ Browser instance ${id} exceeded resource timeout (age: ${Math.round(age/1000)}s, inactive: ${Math.round(inactiveTime/1000)}s)`);
                 
                 this.emit('browser_timeout', { 
@@ -337,6 +355,82 @@ class SystemMonitor extends EventEmitter {
         this.triggerGarbageCollection();
         
         console.log('✅ System monitor cleanup completed');
+    }
+
+    /**
+     * Track active job to prevent browser timeout
+     */
+    setJobActive(jobId, browserInstanceId) {
+        if (!jobId || !browserInstanceId) {
+            console.warn('⚠️ Invalid jobId or browserInstanceId in setJobActive');
+            return;
+        }
+
+        this.activeJobs.set(jobId, {
+            browserInstanceId,
+            startedAt: Date.now(),
+            status: 'active'
+        });
+
+        // Update browser instance with active job ID (with null safety)
+        const instance = this.browserInstances.get(browserInstanceId);
+        if (instance) {
+            instance.activeJobId = jobId;
+            instance.lastActivity = Date.now();
+        }
+
+        console.log(`🎯 Job ${jobId} marked as active on browser ${browserInstanceId}`);
+    }
+
+    /**
+     * Mark job as completed to allow browser timeout
+     */
+    setJobInactive(jobId) {
+        if (!jobId) {
+            console.warn('⚠️ Invalid jobId in setJobInactive');
+            return;
+        }
+
+        const job = this.activeJobs.get(jobId);
+        if (job) {
+            // Clear job from browser instance (with null safety)
+            const instance = this.browserInstances.get(job.browserInstanceId);
+            if (instance) {
+                instance.activeJobId = null;
+                instance.lastActivity = Date.now(); // Update last activity for timeout calculation
+                instance.timeoutDeferred = false; // Reset timeout deferral flag
+            }
+
+            this.activeJobs.delete(jobId);
+            console.log(`🎯 Job ${jobId} marked as inactive on browser ${job.browserInstanceId}`);
+        } else {
+            console.log(`⚠️ Job ${jobId} was not found in active jobs during setJobInactive`);
+        }
+    }
+
+    /**
+     * Check if a job is currently active
+     */
+    isJobActive(jobId) {
+        if (!jobId || !this.activeJobs) {
+            return false;
+        }
+        
+        const job = this.activeJobs.get(jobId);
+        return job && job.status === 'active' && this.activeJobs.has(jobId);
+    }
+
+    /**
+     * Update browser activity for active job
+     */
+    updateJobActivity(jobId) {
+        const job = this.activeJobs.get(jobId);
+        if (job) {
+            const instance = this.browserInstances.get(job.browserInstanceId);
+            if (instance) {
+                instance.lastActivity = Date.now();
+            }
+        }
     }
 }
 

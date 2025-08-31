@@ -525,6 +525,13 @@ class BrowserManager {
             // If page is provided, validate page responsiveness
             if (page) {
                 try {
+                    // Check if page is closed first
+                    if (page.isClosed()) {
+                        validation.errors.push('Page has been closed');
+                        validation.details.push('Page is in closed state');
+                        return validation;
+                    }
+                    
                     // Test page responsiveness with a simple operation
                     await Promise.race([
                         page.evaluate(() => document.readyState),
@@ -537,7 +544,14 @@ class BrowserManager {
                 } catch (pageError) {
                     validation.errors.push(`Page responsiveness test failed: ${pageError.message}`);
                     validation.details.push('Page appears unresponsive or closed');
-                    // Don't return here - browser might still be recoverable
+                    
+                    // If error indicates page/browser closure, this is a critical failure
+                    if (pageError.message.includes('Target page, context or browser has been closed') ||
+                        pageError.message.includes('Session closed') ||
+                        pageError.message.includes('Connection closed')) {
+                        validation.details.push('Critical page closure detected - session unusable');
+                        return validation; // Return immediately as this session cannot be used
+                    }
                 }
             } else {
                 // If no page provided, create a quick test to validate browser can create pages
@@ -555,10 +569,14 @@ class BrowserManager {
                 }
             }
 
-            // All checks passed
-            validation.isValid = validation.sessionExists && validation.browserConnected;
+            // All checks passed - session is only valid if browser is connected AND page is responsive (if page was tested)
+            validation.isValid = validation.sessionExists && validation.browserConnected && 
+                                 (page ? validation.pageResponsive : true);
+            
             if (validation.isValid) {
                 validation.details.push('Session validation completed successfully');
+            } else {
+                validation.details.push('Session validation failed - browser disconnected or page unresponsive');
             }
 
         } catch (error) {
@@ -590,6 +608,10 @@ class BrowserManager {
         } = options;
 
         console.log(`🔧 Validating session for operation: ${operation}`);
+        
+        // Update browser activity during validation
+        const { systemMonitor } = require('./monitor');
+        systemMonitor.updateBrowserActivity(sessionId);
         
         let validation = await this.validateSessionState(sessionId, page);
         
@@ -627,13 +649,21 @@ class BrowserManager {
                     
                     console.log(`🔧 New browser launched for recovery: ${sessionId}`);
                     
-                    // Re-validate the new session
+                    // Re-validate the new session and get updated browser info
                     validation = await this.validateSessionState(sessionId);
                     
                     if (validation.isValid) {
                         validation.recovered = true;
                         validation.recoveryAttempt = recoveryAttempt;
                         validation.details.push(`Session successfully recovered on attempt ${recoveryAttempt}`);
+                        
+                        // Get the new browser and context for session update
+                        const newBrowserInfo = this.activeBrowsers.get(sessionId);
+                        if (newBrowserInfo) {
+                            validation.newBrowser = newBrowserInfo.browser;
+                            validation.newContext = newBrowserInfo.context;
+                        }
+                        
                         console.log(`✅ Session recovery successful for ${sessionId} on attempt ${recoveryAttempt}`);
                         break; // Success, exit recovery loop
                     } else {

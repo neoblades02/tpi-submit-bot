@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const { loginAndProcess } = require('./bot');
 const JobManager = require('./jobManager');
 const { discordNotifier } = require('./discordNotifier');
 const { config } = require('./config');
@@ -8,6 +7,15 @@ const { config } = require('./config');
 const app = express();
 const port = config.server.port;
 const jobManager = new JobManager();
+
+// Inject bot functions to break circular dependency
+const { loginAndProcess, loginAndCreateSession, processRecordsWithSession, sendToWebhook } = require('./bot');
+jobManager.injectBotFunctions({
+    loginAndProcess,
+    loginAndCreateSession, 
+    processRecordsWithSession,
+    sendToWebhook
+});
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -64,10 +72,14 @@ app.post('/trigger-bot', async (req, res) => {
     try {
         console.log('Received data:', receivedData);
 
-        // Pass the data to the bot and get the result
-        const result = await loginAndProcess(receivedData);
-
-        res.status(200).json(result);
+        // Use JobManager instead of direct bot call
+        const job = jobManager.createJob(receivedData);
+        res.status(200).json({
+            success: true,
+            jobId: job.jobId,
+            status: job.status,
+            message: job.message
+        });
     } catch (error) {
         console.error('Error processing request:', error);
         
@@ -240,4 +252,37 @@ app.get('/jobs', (req, res) => {
 
 app.listen(port, () => {
     console.log(`Server listening at http://localhost:${port}`);
+});
+
+// Graceful shutdown handler
+const gracefulShutdown = async () => {
+    console.log('Server is shutting down...');
+    
+    // Clean up JobManager resources and event listeners
+    if (jobManager && jobManager.cleanup) {
+        await jobManager.cleanup();
+    }
+    
+    process.exit(0);
+};
+
+// Listen for termination signals
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+// Handle uncaught exceptions to ensure cleanup
+process.on('uncaughtException', async (error) => {
+    console.error('Uncaught Exception:', error);
+    if (jobManager && jobManager.cleanup) {
+        await jobManager.cleanup();
+    }
+    process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    if (jobManager && jobManager.cleanup) {
+        await jobManager.cleanup();
+    }
+    process.exit(1);
 });

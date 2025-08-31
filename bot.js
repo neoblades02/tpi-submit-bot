@@ -7,6 +7,8 @@ const { systemMonitor } = require('./monitor');
 const { browserManager } = require('./browserManager');
 const { discordNotifier } = require('./discordNotifier');
 const { ErrorClassifier } = require('./errors');
+const { recordStateManager } = require('./recordStateManager');
+const { errorHandler } = require('./errorHandler');
 
 async function loginAndProcess(data, options = {}) {
     let browser = null;
@@ -176,10 +178,20 @@ async function loginAndProcess(data, options = {}) {
         const recordErrors = []; // Track individual record processing errors
         const jobId = options.jobId; // Get jobId from options for webhook reporting
 
-        for (const record of data[0].rows) {
+        for (let recordIndex = 0; recordIndex < data[0].rows.length; recordIndex++) {
+            const record = data[0].rows[recordIndex];
+            const recordId = `${jobId}-${recordIndex}-${record['Client Name']}`.replace(/[^a-zA-Z0-9-_]/g, '_');
+            
+            // Initialize record in state manager
+            const recordState = recordStateManager.initializeRecord(
+                recordId, 
+                record, 
+                session.sessionId, 
+                jobId
+            );
+            
             let processingAttempt = 1;
             const maxProcessingAttempts = 3;
-            let recordProcessed = false;
             
             // Store form state for retry attempts
             let formState = {
@@ -193,7 +205,9 @@ async function loginAndProcess(data, options = {}) {
                 region: 'United States'
             };
             
-            while (!recordProcessed && processingAttempt <= maxProcessingAttempts) {
+            while (recordStateManager.shouldContinueProcessing(recordId) && processingAttempt <= maxProcessingAttempts) {
+                // Start processing attempt in state manager
+                recordStateManager.startAttempt(recordId, processingAttempt);
                 try {
                     if (processingAttempt > 1) {
                         console.log(`Processing record for: ${record['Client Name']} (attempt ${processingAttempt}/${maxProcessingAttempts})`);
@@ -216,6 +230,26 @@ async function loginAndProcess(data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for page readiness error
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'page_readiness_error',
+                                name: 'Page Readiness Error',
+                                message: `Page not ready for processing record ${record['Client Name']}`,
+                                recoverable: processingAttempt < maxProcessingAttempts,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         recordProcessed = true;
                         break;
                     }
@@ -318,10 +352,10 @@ async function loginAndProcess(data, options = {}) {
                     if (clientCreated) {
                         console.log(`  - New client created successfully, restarting form processing...`);
                         
-                        // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+                        // F5 refresh the entire page to start fresh with clean DOM (throttled)
                         console.log(`  - F5 refreshing entire page to restart processing with new client...`);
-                        await page.reload({ waitUntil: 'networkidle' });
-                        await page.waitForTimeout(3000);
+                        const reloadSuccess = await throttledReload(page, session.sessionId || 'unknown', 'client_creation_retry');
+                        await page.waitForTimeout(reloadSuccess ? 3000 : 1000);
                         
                         // Navigate back to Quick Submit form after F5 refresh
                         console.log(`  - Navigating back to Quick Submit form after F5 refresh...`);
@@ -374,6 +408,35 @@ async function loginAndProcess(data, options = {}) {
                             record.status = 'error';
                             record.Submitted = 'Error - Client Creation Failed After Retry';
                             record.InvoiceNumber = 'Error';
+                            const recordError = {
+                                record: record['Client Name'] || 'Unknown',
+                                message: 'Client creation failed after retry attempts',
+                                timestamp: new Date().toISOString(),
+                                context: 'client_creation_failed_after_retry',
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            };
+                            recordErrors.push(recordError);
+                            await sendRecordErrorToWebhook(jobId, recordError);
+                            
+                            // Send Discord notification for client creation failure
+                            if (discordNotifier) {
+                                await discordNotifier.sendErrorNotification({
+                                    type: 'client_creation_error',
+                                    name: 'Client Creation Error',
+                                    message: `Failed to create client for ${record['Client Name']} after retry attempts`,
+                                    recoverable: processingAttempt < maxProcessingAttempts,
+                                    timestamp: new Date().toISOString(),
+                                    attempt: processingAttempt,
+                                    maxAttempts: maxProcessingAttempts
+                                }, {
+                                    jobId: jobId,
+                                    operation: 'client_creation',
+                                    recordName: record['Client Name']
+                                }).catch(notifyError => {
+                                    console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                                });
+                            }
                         }
                     }
                 } else {
@@ -612,7 +675,11 @@ async function loginAndProcess(data, options = {}) {
                 console.log('  ✅ Form page refreshed and ready for next operation');
 
                     // If we reach here, record was processed successfully
-                    recordProcessed = true;
+                    recordStateManager.markProcessed(recordId, {
+                        invoiceNumber: record.InvoiceNumber || 'Generated',
+                        submitted: record.Submitted || 'Success',
+                        processingTime: new Date().toISOString()
+                    });
 
                 } catch (e) {
                     console.error(`Error processing record for ${record['Client Name']}:`, e);
@@ -620,6 +687,46 @@ async function loginAndProcess(data, options = {}) {
                     // Check if this is a form validation failure (recoverable)
                     if (e.formValidationFailure) {
                         console.log(`  📋 Form validation failure for ${record['Client Name']} - will retry`);
+                        
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'form_validation_failure',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
+                        // Log form validation error for webhook and Discord notification
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Form validation failure - incomplete fields detected',
+                            timestamp: new Date().toISOString(),
+                            context: 'form_validation_failure',
+                            attempt: processingAttempt,
+                            maxAttempts: maxProcessingAttempts,
+                            recoverable: true
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for form validation failure
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'form_validation_error',
+                                name: 'Form Validation Error',
+                                message: `Form validation failure for ${record['Client Name']} - will retry (attempt ${processingAttempt}/${maxProcessingAttempts})`,
+                                recoverable: recordStateManager.shouldRetryRecord(recordId),
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'form_validation',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         // Let the retry loop handle this - don't set recordProcessed to true
                         continue;
                     }
@@ -627,8 +734,21 @@ async function loginAndProcess(data, options = {}) {
                     else if (isBrowserCrashed(e)) {
                         console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
                         
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'browser_crash',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
                         // Attempt to recover from browser crash
                         const recoverySuccess = await recoverFromBrowserIssue(page, record, 'crash', processingAttempt);
+                        
+                        // Record recovery attempt
+                        recordStateManager.recordRecoveryAttempt(recordId, 'browser_crash_recovery', recoverySuccess, {
+                            attempt: processingAttempt,
+                            timestamp: new Date().toISOString()
+                        });
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
@@ -647,13 +767,45 @@ async function loginAndProcess(data, options = {}) {
                             };
                             recordErrors.push(recordError);
                             await sendRecordErrorToWebhook(jobId, recordError);
-                            recordProcessed = true;
+                            // Send Discord notification for browser crash
+                            if (discordNotifier) {
+                                await discordNotifier.sendErrorNotification({
+                                    type: 'browser_crash',
+                                    name: 'Browser Crash Error',
+                                    message: `Browser crash during processing for ${record['Client Name']} - recovery failed`,
+                                    recoverable: false,
+                                    timestamp: new Date().toISOString(),
+                                    attempt: processingAttempt,
+                                    maxAttempts: maxProcessingAttempts
+                                }, {
+                                    jobId: jobId,
+                                    operation: 'record_processing',
+                                    recordName: record['Client Name']
+                                }).catch(notifyError => {
+                                    console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                                });
+                            }
+                            
+                            // DO NOT set recordProcessed = true here - let max attempts logic handle it
                         }
                     } else if (isBrowserTimeout(e)) {
                         console.log(`  ⏰ Browser timeout detected for ${record['Client Name']}`);
                         
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'browser_timeout',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
                         // Attempt to recover from browser timeout
                         const recoverySuccess = await recoverFromBrowserIssue(page, record, 'timeout', processingAttempt);
+                        
+                        // Record recovery attempt
+                        recordStateManager.recordRecoveryAttempt(recordId, 'browser_timeout_recovery', recoverySuccess, {
+                            attempt: processingAttempt,
+                            timestamp: new Date().toISOString()
+                        });
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
@@ -672,7 +824,28 @@ async function loginAndProcess(data, options = {}) {
                             };
                             recordErrors.push(recordError);
                             await sendRecordErrorToWebhook(jobId, recordError);
-                            recordProcessed = true;
+                            
+                            // Send Discord notification for browser timeout
+                            if (discordNotifier) {
+                                await discordNotifier.sendErrorNotification({
+                                    type: 'browser_timeout',
+                                    name: 'Browser Timeout Error',
+                                    message: `Browser timeout during processing for ${record['Client Name']} - recovery failed`,
+                                    recoverable: false,
+                                    timestamp: new Date().toISOString(),
+                                    attempt: processingAttempt,
+                                    maxAttempts: maxProcessingAttempts,
+                                    timeout: 240000
+                                }, {
+                                    jobId: jobId,
+                                    operation: 'record_processing',
+                                    recordName: record['Client Name']
+                                }).catch(notifyError => {
+                                    console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                                });
+                            }
+                            
+                            // DO NOT set recordProcessed = true here - let max attempts logic handle it
                         }
                     } else {
                         // Non-crash/timeout error, mark as error and move on
@@ -688,16 +861,40 @@ async function loginAndProcess(data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for max attempts exceeded
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'max_attempts_exceeded',
+                                name: 'Maximum Retry Attempts Exceeded',
+                                message: `Maximum processing attempts exceeded for ${record['Client Name']}`,
+                                recoverable: false,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt - 1,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         recordProcessed = true;
                     }
                 }
                 
                 // Always increment attempt counter at end of loop iteration
                 // This ensures proper retry counting and prevents infinite loops
-                if (!recordProcessed) {
+                if (!recordStateManager.recordStates.get(recordId)?.isProcessed) {
                     processingAttempt++;
                     if (processingAttempt > maxProcessingAttempts) {
                         console.log(`  ❌ Max processing attempts (${maxProcessingAttempts}) exceeded for: ${record['Client Name']}`);
+                        
+                        // Mark record as failed in state manager
+                        recordStateManager.markFailed(recordId, 'Maximum processing attempts exceeded', false);
+                        
                         record.status = 'error';
                         record.Submitted = 'Error - Max Retry Attempts';
                         record.InvoiceNumber = 'Error';
@@ -711,12 +908,69 @@ async function loginAndProcess(data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
-                        recordProcessed = true;
+                        
+                        // Send Discord notification for max attempts exceeded
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'max_attempts_exceeded',
+                                name: 'Maximum Retry Attempts Exceeded',
+                                message: `Maximum processing attempts exceeded for ${record['Client Name']}`,
+                                recoverable: false,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt - 1,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
+                        break; // Exit the while loop
                     }
                 }
             }
             
             processedData.push(record);
+        }
+
+        // Get session processing statistics
+        const sessionStats = recordStateManager.getSessionStats(session.sessionId);
+        console.log(`\n📊 Processing Summary for Session ${session.sessionId}:`);
+        console.log(`  Total Records: ${sessionStats.totalRecords}`);
+        console.log(`  ✅ Completed: ${sessionStats.completed}`);
+        console.log(`  ❌ Failed: ${sessionStats.failed}`);
+        console.log(`  🔄 Processing: ${sessionStats.processing}`);
+        console.log(`  ⏳ Pending: ${sessionStats.pending}`);
+        console.log(`  🚨 Total Errors: ${sessionStats.totalErrors}`);
+        console.log(`  🛠️  Total Recovery Attempts: ${sessionStats.totalRecoveryAttempts}`);
+
+        // Send session summary to Discord
+        if (discordNotifier && sessionStats.totalRecords > 0) {
+            await discordNotifier.sendStatusNotification('session_completed', 
+                `Processing session completed`, {
+                    jobId: options.jobId,
+                    sessionId: session.sessionId,
+                    progress: {
+                        completed: sessionStats.completed,
+                        failed: sessionStats.failed,
+                        total: sessionStats.totalRecords,
+                        percentage: Math.round((sessionStats.completed / sessionStats.totalRecords) * 100)
+                    }
+                }).catch(notifyError => {
+                    console.log('⚠️ Failed to send Discord session summary:', notifyError.message);
+                });
+        }
+
+        // Get failed records for logging
+        const failedRecords = recordStateManager.getFailedRecords();
+        if (failedRecords.length > 0) {
+            console.log(`\n⚠️ Failed Records (${failedRecords.length}):`);
+            failedRecords.forEach(failed => {
+                console.log(`  - ${failed.recordName}: ${failed.failureReason} (${failed.attempts} attempts)`);
+            });
         }
 
         // Send processed data to webhook (only if not disabled)
@@ -1314,10 +1568,10 @@ async function createNewClient(page, firstName, lastName, maxRetries = 3) {
                 console.log(`    ⚠️ Error closing popups: ${e.message}`);
             }
             
-            // F5 refresh the entire page to start fresh with clean DOM (like pressing F5)
+            // F5 refresh the entire page to start fresh with clean DOM (throttled)
             console.log(`    🔄 F5 refreshing entire page after client creation to ensure completely clean DOM state...`);
-            await page.reload({ waitUntil: 'networkidle' });
-            await page.waitForTimeout(3000);
+            const reloadSuccess = await throttledReload(page, 'createNewClient_session', 'post_client_creation');
+            await page.waitForTimeout(reloadSuccess ? 3000 : 1000);
             
             // Navigate back to Quick Submit form after F5 refresh
             console.log(`    🔄 Navigating back to Quick Submit form after F5 refresh...`);
@@ -2247,10 +2501,12 @@ async function retryClientCreationWithRecovery(page, firstName, lastName, client
     if (retryClientCreated) {
         console.log(`  - ✅ Client creation succeeded on retry, restarting form processing...`);
         
-        // Another F5 refresh after successful client creation
-        console.log(`  - 🔄 F5 refreshing page after successful client creation...`);
-        await page.reload({ waitUntil: 'networkidle' });
-        await page.waitForTimeout(3000);
+        // Lighter refresh after successful client creation (no need for heavy F5)
+        console.log(`  - 🔄 Light navigation refresh after successful client creation...`);
+        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit', { 
+            waitUntil: 'domcontentloaded' 
+        });
+        await page.waitForTimeout(1500); // Shorter wait for lighter operation
         
         // Navigate back to Quick Submit form again
         console.log(`  - 🔄 Navigating back to Quick Submit form after client creation...`);
@@ -3299,6 +3555,149 @@ async function sendRecordErrorToWebhook(jobId, recordError) {
     }
 }
 
+// Reload throttling to prevent browser crashes from reload storms
+const reloadTracker = new Map();
+const MAX_RELOADS_PER_MINUTE = 3;
+const RELOAD_THROTTLE_WINDOW = 60000; // 1 minute
+
+async function checkAuthenticationRequired(page) {
+    try {
+        // Check if we're on login page or can access authenticated content
+        const currentUrl = page.url();
+        if (currentUrl.includes('login') || currentUrl.includes('signin') || currentUrl.includes('auth')) {
+            return true;
+        }
+        
+        // Check if signin iframe is present (indicates logout)
+        try {
+            const signinFrame = await page.$('iframe#signinFrame');
+            if (signinFrame) {
+                return true;
+            }
+        } catch (frameError) {
+            // Continue checking other indicators
+        }
+        
+        // Check for login-related elements on the page
+        const loginIndicators = await page.evaluate(() => {
+            const loginElements = document.querySelectorAll('input[type="email"], input[name="username"], input[name="email"], #login, .login');
+            const authText = document.body.textContent.toLowerCase();
+            return {
+                hasLoginElements: loginElements.length > 0,
+                hasAuthText: authText.includes('sign in') || authText.includes('login') || authText.includes('authenticate')
+            };
+        });
+        
+        return loginIndicators.hasLoginElements || loginIndicators.hasAuthText;
+    } catch (error) {
+        console.log(`⚠️ Auth check error: ${error.message} - assuming login required`);
+        // If we can't determine auth state, assume authentication is needed for safety
+        return true;
+    }
+}
+
+async function throttledReload(page, sessionId, reason = 'unknown') {
+    const now = Date.now();
+    const reloads = reloadTracker.get(sessionId) || [];
+    
+    // Remove reloads older than 1 minute
+    const recentReloads = reloads.filter(time => now - time < RELOAD_THROTTLE_WINDOW);
+    
+    // CRITICAL: Check authentication state before throttling
+    const needsAuthentication = await checkAuthenticationRequired(page);
+    
+    if (recentReloads.length >= MAX_RELOADS_PER_MINUTE && !needsAuthentication) {
+        console.log(`⚠️ Reload throttled for session ${sessionId} - ${recentReloads.length} recent reloads (reason: ${reason})`);
+        console.log(`💡 Using lighter navigation instead of F5 refresh`);
+        
+        // Use lighter navigation instead of full reload
+        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit', { 
+            waitUntil: 'domcontentloaded' 
+        });
+        return false; // Indicate throttled
+    }
+    
+    // Allow full reload if authentication is required, regardless of throttle state
+    if (needsAuthentication) {
+        console.log(`🔐 Authentication required - bypassing throttle for session ${sessionId} (reason: ${reason})`);
+    }
+    
+    // Record this reload attempt
+    recentReloads.push(now);
+    reloadTracker.set(sessionId, recentReloads);
+    
+    console.log(`🔄 F5 refresh allowed for session ${sessionId} (${recentReloads.length}/${MAX_RELOADS_PER_MINUTE} recent reloads, reason: ${reason})`);
+    
+    // Add resource cleanup before heavy reload
+    try {
+        if (global.gc) {
+            global.gc();
+            console.log('🗑️ Garbage collection triggered before reload');
+        }
+        
+        // Clear browser-side resources
+        await page.evaluate(() => {
+            if (window.performance && window.performance.clearResourceTimings) {
+                window.performance.clearResourceTimings();
+            }
+        });
+    } catch (cleanupError) {
+        console.log(`⚠️ Resource cleanup warning: ${cleanupError.message}`);
+    }
+    
+    // Perform the actual F5 refresh
+    await page.reload({ waitUntil: 'networkidle' });
+    return true; // Indicate successful reload
+}
+
+// Function to clean up throttle history for closed sessions
+function cleanupThrottleHistory(sessionId, reason = 'session_cleanup') {
+    if (reloadTracker.has(sessionId)) {
+        reloadTracker.delete(sessionId);
+        console.log(`🧹 Cleaned throttle history for session ${sessionId} (reason: ${reason})`);
+        return true;
+    }
+    return false;
+}
+
+// Function to reset throttle history for recovered sessions  
+function resetThrottleHistory(sessionId, reason = 'session_recovery') {
+    reloadTracker.delete(sessionId);
+    console.log(`🔄 Reset throttle history for session ${sessionId} (reason: ${reason})`);
+}
+
+// Periodic cleanup to prevent memory leaks in throttle tracking
+function startThrottleHistoryMaintenance() {
+    const cleanupInterval = setInterval(() => {
+        const now = Date.now();
+        const cutoffTime = now - RELOAD_THROTTLE_WINDOW;
+        let cleanedCount = 0;
+        
+        for (const [sessionId, reloads] of reloadTracker.entries()) {
+            const recentReloads = reloads.filter(time => time > cutoffTime);
+            if (recentReloads.length === 0) {
+                reloadTracker.delete(sessionId);
+                cleanedCount++;
+            } else {
+                reloadTracker.set(sessionId, recentReloads);
+            }
+        }
+        
+        if (cleanedCount > 0) {
+            console.log(`🧹 Throttle history maintenance: cleaned ${cleanedCount} expired sessions (${reloadTracker.size} remain)`);
+        }
+    }, RELOAD_THROTTLE_WINDOW); // Clean up every minute
+    
+    // Prevent process from staying alive just for cleanup
+    cleanupInterval.unref();
+    
+    console.log('🔧 Throttle history maintenance started');
+    return cleanupInterval;
+}
+
+// Start maintenance immediately when module loads
+const throttleMaintenanceInterval = startThrottleHistoryMaintenance();
+
 // New function to process records using existing session
 async function processRecordsWithSession(session, data, options = {}) {
     const { page } = session;
@@ -3326,9 +3725,51 @@ async function processRecordsWithSession(session, data, options = {}) {
                 const sessionError = new Error(`Session validation and recovery failed: ${sessionValidation.errors.join(', ')}`);
                 sessionError.recoverable = true;
                 sessionError.sessionValidation = sessionValidation;
+                
+                // Send Discord notification for session validation failure
+                if (discordNotifier) {
+                    await discordNotifier.sendErrorNotification({
+                        type: 'session_validation_error',
+                        name: 'Session Validation Error',
+                        message: `Session validation and recovery failed: ${sessionValidation.errors.join(', ')}`,
+                        recoverable: true,
+                        timestamp: new Date().toISOString()
+                    }, {
+                        jobId: options.jobId,
+                        operation: 'session_validation',
+                        sessionId: session.sessionId
+                    }).catch(notifyError => {
+                        console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                    });
+                }
+                
                 throw sessionError;
             } else {
                 console.log('✅ Session recovered successfully, proceeding with navigation');
+                
+                // Update session object with new browser components after recovery
+                if (sessionValidation.newBrowser && sessionValidation.newContext) {
+                    console.log('🔄 Updating session object with recovered browser components...');
+                    session.browser = sessionValidation.newBrowser;
+                    session.context = sessionValidation.newContext;
+                    
+                    // Create new page from recovered browser
+                    const newPage = await session.context.newPage();
+                    session.page = newPage;
+                    page = newPage; // Update local page variable
+                    
+                    // Update session tracking for job activity monitoring
+                    const { systemMonitor } = require('./monitor');
+                    if (options.jobId && session.sessionId) {
+                        systemMonitor.setJobActive(options.jobId, session.sessionId);
+                        console.log(`🎯 Updated session tracking for job ${options.jobId} with recovered session ${session.sessionId}`);
+                    }
+                    
+                    // Reset throttle history for recovered session
+                    resetThrottleHistory(session.sessionId, 'session_recovery_update');
+                    
+                    console.log('✅ Session object updated with recovered components');
+                }
             }
         }
         
@@ -3343,10 +3784,20 @@ async function processRecordsWithSession(session, data, options = {}) {
             await page.waitForSelector('#zc-Reservation_Title', { timeout: 60000 });
         }
 
-        for (const record of data[0].rows) {
+        for (let recordIndex = 0; recordIndex < data[0].rows.length; recordIndex++) {
+            const record = data[0].rows[recordIndex];
+            const recordId = `${jobId}-${recordIndex}-${record['Client Name']}`.replace(/[^a-zA-Z0-9-_]/g, '_');
+            
+            // Initialize record in state manager
+            const recordState = recordStateManager.initializeRecord(
+                recordId, 
+                record, 
+                session.sessionId, 
+                jobId
+            );
+            
             let processingAttempt = 1;
             const maxProcessingAttempts = 3;
-            let recordProcessed = false;
             
             // Store form state for retry attempts
             let formState = {
@@ -3360,7 +3811,9 @@ async function processRecordsWithSession(session, data, options = {}) {
                 region: 'United States'
             };
             
-            while (!recordProcessed && processingAttempt <= maxProcessingAttempts) {
+            while (recordStateManager.shouldContinueProcessing(recordId) && processingAttempt <= maxProcessingAttempts) {
+                // Start processing attempt in state manager
+                recordStateManager.startAttempt(recordId, processingAttempt);
                 try {
                     if (processingAttempt > 1) {
                         console.log(`Processing record for: ${record['Client Name']} (attempt ${processingAttempt}/${maxProcessingAttempts})`);
@@ -3383,6 +3836,26 @@ async function processRecordsWithSession(session, data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for page readiness error
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'page_readiness_error',
+                                name: 'Page Readiness Error',
+                                message: `Page not ready for processing record ${record['Client Name']}`,
+                                recoverable: processingAttempt < maxProcessingAttempts,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         recordProcessed = true;
                         break;
                     }
@@ -3433,6 +3906,26 @@ async function processRecordsWithSession(session, data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for page readiness error
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'page_readiness_error',
+                                name: 'Page Readiness Error',
+                                message: `Page not ready for processing record ${record['Client Name']}`,
+                                recoverable: processingAttempt < maxProcessingAttempts,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         recordProcessed = true;
                         break;
                     }
@@ -3508,6 +4001,15 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 console.log(`⚠️ Session validation failed after refresh: ${sessionValidationAfterRefresh.errors.join(', ')}`);
                                 // Continue with processing as this may be a transient issue
                                 console.log('🔄 Continuing with form processing despite validation warning');
+                            } else if (sessionValidationAfterRefresh.recovered && sessionValidationAfterRefresh.newBrowser && sessionValidationAfterRefresh.newContext) {
+                                // Update session components after recovery
+                                console.log('🔄 Updating session object after post-refresh recovery...');
+                                session.browser = sessionValidationAfterRefresh.newBrowser;
+                                session.context = sessionValidationAfterRefresh.newContext;
+                                const newPage = await session.context.newPage();
+                                session.page = newPage;
+                                page = newPage;
+                                console.log('✅ Session object updated after post-refresh recovery');
                             }
                             
                             await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3707,6 +4209,15 @@ async function processRecordsWithSession(session, data, options = {}) {
                                     console.log(`⚠️ Session validation failed before retry: ${sessionValidationBeforeRetry.errors.join(', ')}`);
                                     // Continue with processing as this may be a transient issue
                                     console.log('🔄 Continuing with client creation retry despite validation warning');
+                                } else if (sessionValidationBeforeRetry.recovered && sessionValidationBeforeRetry.newBrowser && sessionValidationBeforeRetry.newContext) {
+                                    // Update session components after recovery
+                                    console.log('🔄 Updating session object after client retry recovery...');
+                                    session.browser = sessionValidationBeforeRetry.newBrowser;
+                                    session.context = sessionValidationBeforeRetry.newContext;
+                                    const newPage = await session.context.newPage();
+                                    session.page = newPage;
+                                    page = newPage;
+                                    console.log('✅ Session object updated after client retry recovery');
                                 }
                                 
                                 await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3759,6 +4270,15 @@ async function processRecordsWithSession(session, data, options = {}) {
                         console.log(`⚠️ Session validation failed before refresh: ${sessionValidationBeforeRefresh.errors.join(', ')}`);
                         // Continue with processing as this may be a transient issue
                         console.log('🔄 Continuing with form refresh despite validation warning');
+                    } else if (sessionValidationBeforeRefresh.recovered && sessionValidationBeforeRefresh.newBrowser && sessionValidationBeforeRefresh.newContext) {
+                        // Update session components after recovery
+                        console.log('🔄 Updating session object after refresh recovery...');
+                        session.browser = sessionValidationBeforeRefresh.newBrowser;
+                        session.context = sessionValidationBeforeRefresh.newContext;
+                        const newPage = await session.context.newPage();
+                        session.page = newPage;
+                        page = newPage;
+                        console.log('✅ Session object updated after refresh recovery');
                     }
                     
                     await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
@@ -3783,7 +4303,11 @@ async function processRecordsWithSession(session, data, options = {}) {
                     console.log('  ✅ Form page refreshed and ready for next operation');
 
                     // If we reach here, record was processed successfully
-                    recordProcessed = true;
+                    recordStateManager.markProcessed(recordId, {
+                        invoiceNumber: record.InvoiceNumber || 'Generated',
+                        submitted: record.Submitted || 'Success',
+                        processingTime: new Date().toISOString()
+                    });
 
                 } catch (e) {
                     console.error(`Error processing record for ${record['Client Name']}:`, e);
@@ -3791,6 +4315,46 @@ async function processRecordsWithSession(session, data, options = {}) {
                     // Check if this is a form validation failure (recoverable)
                     if (e.formValidationFailure) {
                         console.log(`  📋 Form validation failure for ${record['Client Name']} - will retry`);
+                        
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'form_validation_failure',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
+                        // Log form validation error for webhook and Discord notification
+                        const recordError = {
+                            record: record['Client Name'] || 'Unknown',
+                            message: 'Form validation failure - incomplete fields detected',
+                            timestamp: new Date().toISOString(),
+                            context: 'form_validation_failure',
+                            attempt: processingAttempt,
+                            maxAttempts: maxProcessingAttempts,
+                            recoverable: true
+                        };
+                        recordErrors.push(recordError);
+                        await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for form validation failure
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'form_validation_error',
+                                name: 'Form Validation Error',
+                                message: `Form validation failure for ${record['Client Name']} - will retry (attempt ${processingAttempt}/${maxProcessingAttempts})`,
+                                recoverable: recordStateManager.shouldRetryRecord(recordId),
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'form_validation',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         // Let the retry loop handle this - don't set recordProcessed to true
                         continue;
                     }
@@ -3798,8 +4362,21 @@ async function processRecordsWithSession(session, data, options = {}) {
                     else if (isBrowserCrashed(e)) {
                         console.log(`  🚨 Browser crash detected for ${record['Client Name']}`);
                         
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'browser_crash',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
                         // Attempt to recover from browser crash
                         const recoverySuccess = await recoverFromBrowserIssue(page, record, 'crash', processingAttempt);
+                        
+                        // Record recovery attempt
+                        recordStateManager.recordRecoveryAttempt(recordId, 'browser_crash_recovery', recoverySuccess, {
+                            attempt: processingAttempt,
+                            timestamp: new Date().toISOString()
+                        });
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
@@ -3818,13 +4395,45 @@ async function processRecordsWithSession(session, data, options = {}) {
                             };
                             recordErrors.push(recordError);
                             await sendRecordErrorToWebhook(jobId, recordError);
-                            recordProcessed = true;
+                            // Send Discord notification for browser crash
+                            if (discordNotifier) {
+                                await discordNotifier.sendErrorNotification({
+                                    type: 'browser_crash',
+                                    name: 'Browser Crash Error',
+                                    message: `Browser crash during processing for ${record['Client Name']} - recovery failed`,
+                                    recoverable: false,
+                                    timestamp: new Date().toISOString(),
+                                    attempt: processingAttempt,
+                                    maxAttempts: maxProcessingAttempts
+                                }, {
+                                    jobId: jobId,
+                                    operation: 'record_processing',
+                                    recordName: record['Client Name']
+                                }).catch(notifyError => {
+                                    console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                                });
+                            }
+                            
+                            // DO NOT set recordProcessed = true here - let max attempts logic handle it
                         }
                     } else if (isBrowserTimeout(e)) {
                         console.log(`  ⏰ Browser timeout detected for ${record['Client Name']}`);
                         
+                        // Record error in state manager
+                        recordStateManager.recordError(recordId, e, {
+                            type: 'browser_timeout',
+                            attempt: processingAttempt,
+                            recoverable: true
+                        });
+                        
                         // Attempt to recover from browser timeout
                         const recoverySuccess = await recoverFromBrowserIssue(page, record, 'timeout', processingAttempt);
+                        
+                        // Record recovery attempt
+                        recordStateManager.recordRecoveryAttempt(recordId, 'browser_timeout_recovery', recoverySuccess, {
+                            attempt: processingAttempt,
+                            timestamp: new Date().toISOString()
+                        });
                         
                         if (recoverySuccess && processingAttempt < maxProcessingAttempts) {
                             console.log(`  ✅ Recovery successful, retrying record: ${record['Client Name']}`);
@@ -3843,7 +4452,28 @@ async function processRecordsWithSession(session, data, options = {}) {
                             };
                             recordErrors.push(recordError);
                             await sendRecordErrorToWebhook(jobId, recordError);
-                            recordProcessed = true;
+                            
+                            // Send Discord notification for browser timeout
+                            if (discordNotifier) {
+                                await discordNotifier.sendErrorNotification({
+                                    type: 'browser_timeout',
+                                    name: 'Browser Timeout Error',
+                                    message: `Browser timeout during processing for ${record['Client Name']} - recovery failed`,
+                                    recoverable: false,
+                                    timestamp: new Date().toISOString(),
+                                    attempt: processingAttempt,
+                                    maxAttempts: maxProcessingAttempts,
+                                    timeout: 240000
+                                }, {
+                                    jobId: jobId,
+                                    operation: 'record_processing',
+                                    recordName: record['Client Name']
+                                }).catch(notifyError => {
+                                    console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                                });
+                            }
+                            
+                            // DO NOT set recordProcessed = true here - let max attempts logic handle it
                         }
                     } else {
                         // Non-crash/timeout error, mark as error and move on
@@ -3859,16 +4489,40 @@ async function processRecordsWithSession(session, data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
+                        
+                        // Send Discord notification for max attempts exceeded
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'max_attempts_exceeded',
+                                name: 'Maximum Retry Attempts Exceeded',
+                                message: `Maximum processing attempts exceeded for ${record['Client Name']}`,
+                                recoverable: false,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt - 1,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
                         recordProcessed = true;
                     }
                 }
                 
                 // Always increment attempt counter at end of loop iteration
                 // This ensures proper retry counting and prevents infinite loops
-                if (!recordProcessed) {
+                if (!recordStateManager.recordStates.get(recordId)?.isProcessed) {
                     processingAttempt++;
                     if (processingAttempt > maxProcessingAttempts) {
                         console.log(`  ❌ Max processing attempts (${maxProcessingAttempts}) exceeded for: ${record['Client Name']}`);
+                        
+                        // Mark record as failed in state manager
+                        recordStateManager.markFailed(recordId, 'Maximum processing attempts exceeded', false);
+                        
                         record.status = 'error';
                         record.Submitted = 'Error - Max Retry Attempts';
                         record.InvoiceNumber = 'Error';
@@ -3882,7 +4536,27 @@ async function processRecordsWithSession(session, data, options = {}) {
                         };
                         recordErrors.push(recordError);
                         await sendRecordErrorToWebhook(jobId, recordError);
-                        recordProcessed = true;
+                        
+                        // Send Discord notification for max attempts exceeded
+                        if (discordNotifier) {
+                            await discordNotifier.sendErrorNotification({
+                                type: 'max_attempts_exceeded',
+                                name: 'Maximum Retry Attempts Exceeded',
+                                message: `Maximum processing attempts exceeded for ${record['Client Name']}`,
+                                recoverable: false,
+                                timestamp: new Date().toISOString(),
+                                attempt: processingAttempt - 1,
+                                maxAttempts: maxProcessingAttempts
+                            }, {
+                                jobId: jobId,
+                                operation: 'record_processing',
+                                recordName: record['Client Name']
+                            }).catch(notifyError => {
+                                console.log('⚠️ Failed to send Discord notification:', notifyError.message);
+                            });
+                        }
+                        
+                        break; // Exit the while loop
                     }
                 }
             }
@@ -3913,6 +4587,11 @@ async function processRecordsWithSession(session, data, options = {}) {
         
         // Return partial results and let JobManager handle the error
         return processedData;
+    } finally {
+        // Cleanup throttle history when session processing ends
+        if (session && session.sessionId) {
+            cleanupThrottleHistory(session.sessionId, 'session_processing_complete');
+        }
     }
 }
 

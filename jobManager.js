@@ -8,6 +8,7 @@ const { systemMonitor } = require('./monitor');
 const { discordNotifier } = require('./discordNotifier');
 const { autoRestartManager } = require('./circuitBreaker');
 const { ErrorClassifier, BrowserLaunchError, BrowserCrashError, BrowserSessionTerminatedError, CircuitBreakerError } = require('./errors');
+const { errorHandler } = require('./errorHandler');
 
 class JobManager extends EventEmitter {
     constructor() {
@@ -17,6 +18,8 @@ class JobManager extends EventEmitter {
         this.isProcessing = false;
         this.maxConcurrentJobs = config.job.maxConcurrentJobs; // Use configurable value
         this.statusWebhookUrl = config.status.webhookUrl;
+        this.botFunctions = null; // Injected dependencies to break circular require
+        this.eventListeners = new Map(); // Track event listeners for cleanup
         
         // Initialize monitoring and stability systems
         this.initializeStabilitySystems();
@@ -24,6 +27,55 @@ class JobManager extends EventEmitter {
         console.log('🎯 JobManager initialized with enhanced stability features');
         console.log(`   Max concurrent jobs: ${this.maxConcurrentJobs}`);
         console.log(`   Status webhook: ${this.statusWebhookUrl}`);
+    }
+
+    /**
+     * Inject bot functions to break circular dependency
+     * @param {Object} botFunctions - Functions from bot.js
+     */
+    injectBotFunctions(botFunctions) {
+        this.botFunctions = botFunctions;
+        console.log('✅ Bot functions injected into JobManager');
+    }
+
+    /**
+     * Add managed event listener that can be properly cleaned up
+     * @param {EventEmitter} emitter - Event emitter instance
+     * @param {string} event - Event name
+     * @param {Function} listener - Event listener function
+     */
+    addManagedListener(emitter, event, listener) {
+        if (!this.eventListeners.has(emitter)) {
+            this.eventListeners.set(emitter, new Map());
+        }
+        
+        const emitterListeners = this.eventListeners.get(emitter);
+        if (!emitterListeners.has(event)) {
+            emitterListeners.set(event, []);
+        }
+        
+        emitterListeners.get(event).push(listener);
+        emitter.on(event, listener);
+    }
+
+    /**
+     * Clean up all managed event listeners
+     */
+    cleanupEventListeners() {
+        console.log('🧹 Cleaning up JobManager event listeners...');
+        let cleanedCount = 0;
+        
+        for (const [emitter, events] of this.eventListeners.entries()) {
+            for (const [event, listeners] of events.entries()) {
+                for (const listener of listeners) {
+                    emitter.removeListener(event, listener);
+                    cleanedCount++;
+                }
+            }
+        }
+        
+        this.eventListeners.clear();
+        console.log(`✅ Cleaned up ${cleanedCount} event listeners`);
     }
 
     /**
@@ -36,34 +88,34 @@ class JobManager extends EventEmitter {
             console.log('🔍 System monitoring started');
         }
 
-        // Set up system monitor event listeners
-        systemMonitor.on('memory_warning', (data) => {
+        // Set up system monitor event listeners with cleanup tracking
+        this.addManagedListener(systemMonitor, 'memory_warning', (data) => {
             console.log(`⚠️ Memory warning: ${data.usage.rss}MB (threshold: ${data.threshold}MB)`);
             this.handleMemoryWarning(data);
         });
 
-        systemMonitor.on('memory_exhaustion', (data) => {
+        this.addManagedListener(systemMonitor, 'memory_exhaustion', (data) => {
             console.log(`🚨 Memory exhaustion detected: ${data.usage.rss}MB`);
             this.handleMemoryExhaustion(data);
         });
 
-        systemMonitor.on('browser_timeout', (data) => {
+        this.addManagedListener(systemMonitor, 'browser_timeout', (data) => {
             console.log(`⏰ Browser timeout detected for instance ${data.id}`);
             this.handleBrowserTimeout(data);
         });
 
-        systemMonitor.on('emergency_cleanup', (data) => {
+        this.addManagedListener(systemMonitor, 'emergency_cleanup', (data) => {
             console.log(`🚨 Emergency cleanup performed, ${data.closedBrowsers} browsers closed`);
             this.handleEmergencyCleanup(data);
         });
 
-        // Set up auto-restart manager event listeners
-        autoRestartManager.on('restartRequested', (data) => {
+        // Set up auto-restart manager event listeners with cleanup tracking
+        this.addManagedListener(autoRestartManager, 'restartRequested', (data) => {
             console.log(`🔄 Restart requested for service: ${data.service}`);
             this.handleRestartRequest(data);
         });
 
-        autoRestartManager.on('circuitBreakerStateChange', (data) => {
+        this.addManagedListener(autoRestartManager, 'circuitBreakerStateChange', (data) => {
             console.log(`🔒 Circuit breaker state changed: ${data.service} ${data.oldState} → ${data.newState}`);
             this.handleCircuitBreakerStateChange(data);
         });
@@ -526,6 +578,9 @@ class JobManager extends EventEmitter {
         job.status = 'cancelled';
         job.completedAt = new Date().toISOString();
 
+        // Mark job as inactive to allow browser timeout
+        systemMonitor.setJobInactive(jobId);
+        
         // Remove from queue if pending
         const queueIndex = this.processingQueue.indexOf(jobId);
         if (queueIndex > -1) {
@@ -594,7 +649,11 @@ class JobManager extends EventEmitter {
         });
 
         try {
-            const { loginAndCreateSession, processRecordsWithSession } = require('./bot');
+            // Use injected dependencies instead of circular require
+            if (!this.botFunctions) {
+                throw new Error('Bot functions not injected - cannot process job');
+            }
+            const { loginAndCreateSession, processRecordsWithSession } = this.botFunctions;
             
             // Process in batches to avoid memory issues and provide progress updates
             const data = job.data;
@@ -625,82 +684,36 @@ class JobManager extends EventEmitter {
             let session = null;
             try {
                 session = await loginAndCreateSession();
+                
+                // Track job as active to prevent browser timeout
+                if (session && session.sessionId) {
+                    systemMonitor.setJobActive(job.id, session.sessionId);
+                }
             } catch (loginError) {
-                console.error('❌ Failed to create browser session:', loginError.message);
+                // Use centralized error handler instead of duplicate logic
+                const { classifiedError } = await errorHandler.handleJobError(
+                    loginError, 
+                    job.id, 
+                    this, 
+                    { 
+                        operation: 'browser_session_creation',
+                        memoryUsage: systemMonitor.checkMemoryUsage() 
+                    }
+                );
                 
-                // Classify error using enhanced error classification
-                const classifiedError = ErrorClassifier.classify(loginError, {
-                    operation: 'browser_session_creation',
-                    jobId: job.id
-                });
-                
-                // Add classified error to job
+                // Add to job errors
                 job.errors.push({
                     message: `Browser session creation failed: ${classifiedError.message}`,
-                    timestamp: classifiedError.timestamp,
+                    timestamp: classifiedError.timestamp || new Date().toISOString(),
                     context: classifiedError.type || 'session_creation_failure',
                     errorType: classifiedError.name,
                     recoverable: classifiedError.recoverable,
                     originalError: loginError.message
                 });
                 
-                // Handle different error types appropriately
-                if (classifiedError instanceof BrowserLaunchError) {
-                    console.log('🚨 Browser launch error detected, checking circuit breaker...');
-                    
-                    // Trigger circuit breaker logic
-                    const browserCircuitBreaker = autoRestartManager.getCircuitBreaker('browser');
-                    
-                    await this.sendStatusUpdate(job.id, {
-                        status: 'browser_launch_failed',
-                        message: `Browser launch failed: ${classifiedError.message}`,
-                        error: classifiedError.toJSON(),
-                        recoverable: classifiedError.recoverable
-                    });
-                    
-                    // Send enhanced Discord notification
-                    await discordNotifier.sendErrorNotification(classifiedError, {
-                        jobId: job.id,
-                        operation: 'browser_launch',
-                        memoryUsage: systemMonitor.checkMemoryUsage(),
-                        circuitBreakerStatus: browserCircuitBreaker.getMetrics().state
-                    });
-                    
-                    // Consider automatic restart if error is recoverable
-                    if (classifiedError.recoverable && autoRestartManager) {
-                        await autoRestartManager.considerRestart('browser', 
-                            `Browser launch failure: ${classifiedError.message}`);
-                    }
-                    
-                } else if (classifiedError instanceof CircuitBreakerError) {
-                    console.log('🔒 Circuit breaker error - service temporarily unavailable');
-                    
-                    await this.sendStatusUpdate(job.id, {
-                        status: 'circuit_breaker_blocked',
-                        message: 'Browser service temporarily unavailable due to circuit breaker',
-                        error: classifiedError.toJSON()
-                    });
-                    
-                    // Pause job processing until circuit breaker recovers
+                // Handle circuit breaker pause if needed
+                if (classifiedError instanceof CircuitBreakerError) {
                     this.pauseJobProcessing('circuit_breaker_open');
-                    
-                } else {
-                    // General session creation error
-                    console.log('⚠️ General session creation error');
-                    
-                    await this.sendStatusUpdate(job.id, {
-                        status: 'session_creation_failed',
-                        message: `Could not establish session: ${classifiedError.message}`,
-                        error: classifiedError.toJSON ? classifiedError.toJSON() : classifiedError.message,
-                        recoverable: classifiedError.recoverable || false
-                    });
-                    
-                    // Send error notification
-                    await discordNotifier.sendErrorNotification(classifiedError, {
-                        jobId: job.id,
-                        operation: 'session_creation',
-                        memoryUsage: systemMonitor.checkMemoryUsage()
-                    });
                 }
                 
                 throw loginError; // Re-throw to be caught by outer handler
@@ -727,6 +740,9 @@ class JobManager extends EventEmitter {
                     
                     try {
                         console.log(`Processing batch ${batchIndex + 1}/${batches.length} (using existing session)`);
+                        
+                        // Update job activity to prevent browser timeout during processing
+                        systemMonitor.updateJobActivity(job.id);
                         
                         // Process batch using existing session - no login needed
                         const batchResults = await processRecordsWithSession(session, batchData, { 
@@ -896,6 +912,12 @@ class JobManager extends EventEmitter {
                                 
                                 session = await loginAndCreateSession();
                                 
+                                // Track new session as active to prevent browser timeout
+                                if (session && session.sessionId) {
+                                    systemMonitor.setJobActive(job.id, session.sessionId);
+                                    console.log(`🎯 New session ${session.sessionId} tracked as active for job ${job.id}`);
+                                }
+                                
                                 // Increment login count and crash recovery count
                                 job.stats.loginCount++;
                                 job.stats.crashRecoveries++;
@@ -911,6 +933,10 @@ class JobManager extends EventEmitter {
                                 
                                 // Retry the current batch with new session
                                 console.log(`🔄 Retrying batch ${batchIndex + 1} with new session...`);
+                                
+                                // Update job activity before retry
+                                systemMonitor.updateJobActivity(job.id);
+                                
                                 const retryResults = await processRecordsWithSession(session, batchData, { 
                                     sendWebhook: false,
                                     jobId: job.id // Pass jobId for individual error reporting
@@ -1041,8 +1067,10 @@ class JobManager extends EventEmitter {
             if (job.status === 'completed' && job.results.length > 0) {
                 try {
                     console.log(`Sending consolidated webhook for job ${job.id} with ${job.results.length} results`);
-                    const { sendToWebhook } = require('./bot');
-                    await sendToWebhook(job.results);
+                    if (!this.botFunctions || !this.botFunctions.sendToWebhook) {
+                        throw new Error('sendToWebhook function not available - cannot send webhook');
+                    }
+                    await this.botFunctions.sendToWebhook(job.results);
                     console.log(`Webhook sent successfully for job ${job.id}`);
                     
                     // Send webhook delivery confirmation status update
@@ -1087,6 +1115,9 @@ class JobManager extends EventEmitter {
                 errors: job.errors.length > 0 ? job.errors : null
             });
 
+            // Mark job as inactive to allow browser timeout
+            systemMonitor.setJobInactive(job.id);
+            
             // Now that all post-processing is complete, safely close the browser session
             if (session && session.browser) {
                 try {
@@ -1118,6 +1149,9 @@ class JobManager extends EventEmitter {
                 errors: job.errors.length > 0 ? job.errors : null
             });
 
+            // Mark job as inactive to allow browser timeout
+            systemMonitor.setJobInactive(job.id);
+            
             // Close browser session on job failure
             if (session && session.browser) {
                 try {
@@ -1269,6 +1303,9 @@ class JobManager extends EventEmitter {
             if (autoRestartManager) {
                 autoRestartManager.destroy();
             }
+
+            // Clean up all managed event listeners
+            this.cleanupEventListeners();
 
             console.log('✅ JobManager cleanup completed');
 
