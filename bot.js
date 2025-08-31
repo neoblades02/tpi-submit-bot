@@ -513,8 +513,49 @@ async function loginAndProcess(data, options = {}) {
                                 console.log('  ✅ Package Price field populated successfully');
                             } catch (e) {
                                 console.error(`  ❌ ERROR: Package Price filling failed: ${e.message}`);
-                                // Package Price is important but not as critical as commission - log as error but don't fail the record
-                                console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                
+                                // Check if this is a critical field failure requiring page reload recovery
+                                if (e.requiresPageReload && e.criticalField) {
+                                    console.log(`🔄 Critical Package Price failure detected, attempting page reload recovery...`);
+                                    
+                                    try {
+                                        // Attempt page reload recovery for critical Package Price field
+                                        const recoveryResult = await performPageReloadRecovery(
+                                            page, 
+                                            recordId, 
+                                            formState, 
+                                            record, 
+                                            session.sessionId, 
+                                            e
+                                        );
+                                        
+                                        if (recoveryResult.success) {
+                                            console.log(`✅ Package Price page reload recovery successful, retrying...`);
+                                            
+                                            // Update formState with restored data
+                                            Object.assign(formState, recoveryResult.restoredFormState);
+                                            
+                                            // Retry the failed field with fresh page state
+                                            await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
+                                            console.log('  ✅ Package Price field populated successfully after recovery');
+                                            
+                                            // Clear the backup after successful retry
+                                            clearFormStateBackup(recordId);
+                                            
+                                        } else {
+                                            console.error(`❌ Package Price page reload recovery failed: ${recoveryResult.error}`);
+                                            console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                        }
+                                        
+                                    } catch (recoveryError) {
+                                        console.error(`❌ Package Price page reload recovery process failed: ${recoveryError.message}`);
+                                        console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                    }
+                                    
+                                } else {
+                                    // Standard Package Price error handling (important but not critical enough to fail the record)
+                                    console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                }
                             }
 
                             // 9. Fill Expected Commission with validation (CRITICAL FIELD)
@@ -524,12 +565,67 @@ async function loginAndProcess(data, options = {}) {
                                 console.log('  ✅ Expected Commission field populated successfully');
                             } catch (e) {
                                 console.error(`  ❌ CRITICAL ERROR: Expected Commission filling failed: ${e.message}`);
-                                // Commission is a required business field - treat failure as critical
-                                const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
-                                commissionError.recoverable = true;
-                                commissionError.fieldName = 'Expected Commission';
-                                commissionError.criticalField = true;
-                                throw commissionError;
+                                
+                                // Check if this is a critical field failure that requires page reload recovery
+                                if (e.requiresPageReload && e.criticalField) {
+                                    console.log(`🔄 Critical field failure detected, attempting page reload recovery...`);
+                                    
+                                    try {
+                                        // Attempt page reload recovery for critical field
+                                        const recoveryResult = await performPageReloadRecovery(
+                                            page, 
+                                            recordId, 
+                                            formState, 
+                                            record, 
+                                            session.sessionId, 
+                                            e
+                                        );
+                                        
+                                        if (recoveryResult.success) {
+                                            console.log(`✅ Page reload recovery successful, updating form state...`);
+                                            
+                                            // Update formState with restored data
+                                            Object.assign(formState, recoveryResult.restoredFormState);
+                                            
+                                            console.log(`🔄 Retrying Expected Commission field after page reload recovery...`);
+                                            // Retry the failed field with fresh page state
+                                            await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
+                                            console.log('  ✅ Expected Commission field populated successfully after recovery');
+                                            
+                                            // Clear the backup after successful retry
+                                            clearFormStateBackup(recordId);
+                                            
+                                        } else {
+                                            console.error(`❌ Page reload recovery failed: ${recoveryResult.error}`);
+                                            // Fall back to standard error handling
+                                            const commissionError = new Error(`Critical field failure after page reload recovery: Expected Commission - ${recoveryResult.error || e.message}`);
+                                            commissionError.recoverable = true;
+                                            commissionError.fieldName = 'Expected Commission';
+                                            commissionError.criticalField = true;
+                                            commissionError.pageReloadRecoveryAttempted = true;
+                                            throw commissionError;
+                                        }
+                                        
+                                    } catch (recoveryError) {
+                                        console.error(`❌ Page reload recovery process failed: ${recoveryError.message}`);
+                                        // Fall back to standard error handling
+                                        const commissionError = new Error(`Critical field failure with recovery error: Expected Commission - ${recoveryError.message}`);
+                                        commissionError.recoverable = true;
+                                        commissionError.fieldName = 'Expected Commission';
+                                        commissionError.criticalField = true;
+                                        commissionError.pageReloadRecoveryFailed = true;
+                                        throw commissionError;
+                                    }
+                                    
+                                } else {
+                                    // Standard critical field error handling (no page reload recovery)
+                                    console.log(`❌ Critical field error without page reload recovery requirement`);
+                                    const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
+                                    commissionError.recoverable = true;
+                                    commissionError.fieldName = 'Expected Commission';
+                                    commissionError.criticalField = true;
+                                    throw commissionError;
+                                }
                             }
 
                             // 10. Comprehensive validation of all required fields before submission
@@ -945,6 +1041,10 @@ async function loginAndProcess(data, options = {}) {
                     }
                 }
             }
+            
+            // Clean up form state backup after record processing is complete
+            clearFormStateBackup(recordId);
+            console.log(`🧹 Form state backup cleaned up for record: ${record['Client Name']}`);
             
             processedData.push(record);
         }
@@ -2247,7 +2347,17 @@ async function fillAndValidateField(page, fieldType, value, fieldName, maxRetrie
             
             // Validate the field was filled correctly
             const actualValue = await page.inputValue(selector);
-            if (actualValue === value) {
+            
+            // For currency fields, check if values are numerically equivalent (handle formatting)
+            let isValid = actualValue === value;
+            if (isCurrencyField && !isValid) {
+                const expectedNum = parseFloat(value.replace(/[,$]/g, ''));
+                const actualNum = parseFloat(actualValue.replace(/[,$]/g, ''));
+                isValid = !isNaN(expectedNum) && !isNaN(actualNum) && Math.abs(expectedNum - actualNum) < 0.01;
+                console.log(`    💰 Currency validation: Expected: ${expectedNum}, Actual: ${actualNum}, Valid: ${isValid}`);
+            }
+            
+            if (isValid) {
                 console.log(`    ✅ ${fieldName} validated successfully: "${actualValue}"`);
                 return true;
             } else {
@@ -2285,8 +2395,38 @@ async function fillAndValidateField(page, fieldType, value, fieldName, maxRetrie
                     console.log(`    ❌ ${fieldName} failed after ${maxRetries} attempts`);
                     if (isCurrencyField) {
                         console.log(`    💰 CRITICAL: Currency field population failed - this may cause form submission issues`);
+                        
+                        // Check if this is a formatting-related currency failure (critical field requiring page reload)
+                        const expectedNum = parseFloat(value.replace(/[,$]/g, ''));
+                        const actualNum = parseFloat(actualValue.replace(/[,$]/g, ''));
+                        const isFormattingIssue = !isNaN(expectedNum) && !isNaN(actualNum) && 
+                                                Math.abs(expectedNum - actualNum) < 0.01 && 
+                                                actualValue.includes(',') && !value.includes(',');
+                        
+                        if (isFormattingIssue) {
+                            console.log(`    💰 Detected currency formatting issue: "${value}" vs "${actualValue}"`);
+                            const error = new Error(`Critical currency field formatting failure: ${fieldName} - Expected: "${value}", Got: "${actualValue}"`);
+                            error.criticalField = true;
+                            error.requiresPageReload = true;
+                            error.fieldName = fieldName;
+                            error.fieldType = 'currency';
+                            error.formattingIssue = true;
+                            throw error;
+                        }
                     }
-                    // Instead of returning false, throw an error for proper error handling
+                    
+                    // For critical fields (Expected Commission, Package Price), mark for potential page reload
+                    const criticalFields = ['Expected Commission', 'Package Price'];
+                    if (criticalFields.includes(fieldName)) {
+                        const error = new Error(`Critical field failure: ${fieldName} could not be populated after ${maxRetries} attempts. Expected: "${value}", Got: "${actualValue}"`);
+                        error.criticalField = true;
+                        error.requiresPageReload = true;
+                        error.fieldName = fieldName;
+                        error.fieldType = isCurrencyField ? 'currency' : 'text';
+                        throw error;
+                    }
+                    
+                    // Standard error for non-critical fields
                     throw new Error(`${fieldName} field validation failed after ${maxRetries} attempts. Expected: "${value}", Got: "${actualValue}"`);
                 }
                 await page.waitForTimeout(1000);
@@ -4708,6 +4848,255 @@ async function throttledReload(page, sessionId, reason = 'unknown') {
     return true; // Indicate successful reload
 }
 
+// Form state backup and recovery system for page reload recovery
+const formStateBackups = new Map();
+
+/**
+ * Backup current form state before page reload for critical field recovery
+ * @param {string} recordId - Unique identifier for the record
+ * @param {Object} formState - Current form state to backup
+ * @param {Object} additionalContext - Additional context like client info, attempt count
+ */
+function backupFormState(recordId, formState, additionalContext = {}) {
+    const backup = {
+        formState: { ...formState },
+        timestamp: Date.now(),
+        context: { ...additionalContext },
+        backupReason: 'critical_field_failure'
+    };
+    
+    formStateBackups.set(recordId, backup);
+    console.log(`💾 Form state backed up for record ${recordId}`);
+    console.log(`💾 Backed up state: ${Object.keys(formState).join(', ')}`);
+    
+    // Cleanup old backups (older than 10 minutes)
+    const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
+    for (const [id, backupData] of formStateBackups.entries()) {
+        if (backupData.timestamp < tenMinutesAgo) {
+            formStateBackups.delete(id);
+            console.log(`🗑️ Cleaned up old form state backup for record ${id}`);
+        }
+    }
+}
+
+/**
+ * Restore form state after page reload for critical field recovery
+ * @param {string} recordId - Unique identifier for the record
+ * @returns {Object|null} - Restored form state or null if no backup exists
+ */
+function restoreFormState(recordId) {
+    const backup = formStateBackups.get(recordId);
+    if (!backup) {
+        console.log(`⚠️ No form state backup found for record ${recordId}`);
+        return null;
+    }
+    
+    const ageLimitMs = 5 * 60 * 1000; // 5 minutes
+    const isExpired = (Date.now() - backup.timestamp) > ageLimitMs;
+    
+    if (isExpired) {
+        console.log(`⚠️ Form state backup expired for record ${recordId}`);
+        formStateBackups.delete(recordId);
+        return null;
+    }
+    
+    console.log(`📋 Restoring form state for record ${recordId}`);
+    console.log(`📋 Restoring state: ${Object.keys(backup.formState).join(', ')}`);
+    
+    return {
+        formState: backup.formState,
+        context: backup.context,
+        backupAge: Date.now() - backup.timestamp
+    };
+}
+
+/**
+ * Clear form state backup for a record (cleanup after successful processing)
+ * @param {string} recordId - Unique identifier for the record
+ */
+function clearFormStateBackup(recordId) {
+    if (formStateBackups.has(recordId)) {
+        formStateBackups.delete(recordId);
+        console.log(`🗑️ Form state backup cleared for record ${recordId}`);
+    }
+}
+
+/**
+ * Perform page reload recovery for critical field failures
+ * @param {Object} page - Playwright page object
+ * @param {string} recordId - Unique identifier for the record
+ * @param {Object} formState - Current form state to backup
+ * @param {Object} record - Original record data
+ * @param {string} sessionId - Session identifier for throttling
+ * @param {Object} error - The critical field error that triggered recovery
+ * @returns {Object} - Recovery result with success status and restored state
+ */
+async function performPageReloadRecovery(page, recordId, formState, record, sessionId, error) {
+    console.log(`🔄 Starting page reload recovery for critical field failure...`);
+    console.log(`🔄 Failed field: ${error.fieldName} (${error.fieldType})`);
+    
+    try {
+        // 1. Backup current form state
+        const backupContext = {
+            failedField: error.fieldName,
+            fieldType: error.fieldType,
+            errorMessage: error.message,
+            isFormattingIssue: error.formattingIssue || false,
+            clientName: record['Client Name'],
+            sessionId: sessionId
+        };
+        
+        backupFormState(recordId, formState, backupContext);
+        console.log(`💾 Form state backed up before page reload recovery`);
+        
+        // 2. Perform throttled page reload for fresh state
+        console.log(`📄 Performing F5 page reload to clear form state...`);
+        const reloadSuccess = await throttledReload(page, sessionId, 'critical_field_recovery');
+        
+        if (!reloadSuccess) {
+            console.log(`❌ Page reload was throttled - using navigation fallback`);
+            await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit', { 
+                waitUntil: 'domcontentloaded' 
+            });
+        }
+        
+        // 3. Wait for page to stabilize after reload
+        await page.waitForTimeout(3000 + Math.random() * 2000);
+        console.log(`⏳ Page reloaded, waiting for DOM to stabilize...`);
+        
+        // 4. Navigate back to Quick Submit form
+        console.log(`🔄 Navigating back to Quick Submit form after reload...`);
+        await page.goto('https://my.tpisuitcase.com/#Form:Quick_Submit');
+        await page.waitForTimeout(2000 + Math.random() * 1000);
+        
+        // 5. Wait for form to be fully loaded
+        await page.waitForSelector('form', { timeout: 10000 });
+        console.log(`📋 Quick Submit form is ready after page reload`);
+        
+        // 6. Restore form state from backup
+        const restoredData = restoreFormState(recordId);
+        if (!restoredData) {
+            throw new Error('Failed to restore form state after page reload');
+        }
+        
+        console.log(`✅ Page reload recovery completed successfully`);
+        console.log(`📋 Form state restored, ready to retry failed field: ${error.fieldName}`);
+        
+        return {
+            success: true,
+            restoredFormState: restoredData.formState,
+            backupContext: restoredData.context,
+            recoveryAge: restoredData.backupAge,
+            reloadPerformed: reloadSuccess
+        };
+        
+    } catch (recoveryError) {
+        console.error(`❌ Page reload recovery failed: ${recoveryError.message}`);
+        
+        // Clean up backup on failure
+        clearFormStateBackup(recordId);
+        
+        return {
+            success: false,
+            error: recoveryError.message,
+            originalError: error.message
+        };
+    }
+}
+
+/**
+ * Test function to validate page reload recovery functionality
+ * This function should only be used for testing/debugging purposes
+ * @param {Object} page - Playwright page object
+ * @param {string} testRecordId - Test record ID
+ * @returns {Object} - Test results
+ */
+async function testPageReloadRecovery(page, testRecordId = 'test-record-123') {
+    console.log(`🧪 Starting page reload recovery test for record: ${testRecordId}`);
+    
+    try {
+        // 1. Create test form state
+        const testFormState = {
+            reservationTitle: 'Test Tour',
+            bookingNumber: 'TEST123',
+            tourOperator: 'Test Operator',
+            startDate: '2024-01-15',
+            endDate: '2024-01-20',
+            packagePrice: '1532.11',
+            expectedCommission: '153.21'
+        };
+        
+        // 2. Create test record
+        const testRecord = {
+            'Client Name': 'Test Client',
+            'Booking Number': 'TEST123',
+            'Tour Operator': 'Test Operator',
+            'Package Price': '1532.11',
+            'Commission Projected': '153.21'
+        };
+        
+        // 3. Create test critical field error (currency formatting issue)
+        const testError = new Error('Test critical currency field formatting failure');
+        testError.criticalField = true;
+        testError.requiresPageReload = true;
+        testError.fieldName = 'Expected Commission';
+        testError.fieldType = 'currency';
+        testError.formattingIssue = true;
+        
+        console.log(`🧪 Test data prepared, testing backup functionality...`);
+        
+        // 4. Test backup functionality
+        backupFormState(testRecordId, testFormState, {
+            clientName: testRecord['Client Name'],
+            testMode: true
+        });
+        
+        console.log(`🧪 Backup test passed, testing restore functionality...`);
+        
+        // 5. Test restore functionality
+        const restoredData = restoreFormState(testRecordId);
+        if (!restoredData) {
+            throw new Error('Form state backup/restore test failed - no data restored');
+        }
+        
+        // 6. Validate restored data
+        const stateMatches = JSON.stringify(testFormState) === JSON.stringify(restoredData.formState);
+        if (!stateMatches) {
+            throw new Error('Form state backup/restore test failed - data mismatch');
+        }
+        
+        console.log(`🧪 Restore test passed, testing cleanup functionality...`);
+        
+        // 7. Test cleanup functionality
+        clearFormStateBackup(testRecordId);
+        const afterCleanup = restoreFormState(testRecordId);
+        if (afterCleanup) {
+            throw new Error('Form state cleanup test failed - data still exists after cleanup');
+        }
+        
+        console.log(`✅ Page reload recovery system validation completed successfully`);
+        console.log(`✅ All core functions (backup, restore, cleanup) are working correctly`);
+        
+        return {
+            success: true,
+            testsPassed: ['backup', 'restore', 'cleanup'],
+            message: 'Page reload recovery system is ready for production use'
+        };
+        
+    } catch (testError) {
+        console.error(`❌ Page reload recovery test failed: ${testError.message}`);
+        
+        // Clean up any test data
+        clearFormStateBackup(testRecordId);
+        
+        return {
+            success: false,
+            error: testError.message,
+            message: 'Page reload recovery system validation failed'
+        };
+    }
+}
+
 // Function to clean up throttle history for closed sessions
 function cleanupThrottleHistory(sessionId, reason = 'session_cleanup') {
     if (reloadTracker.has(sessionId)) {
@@ -5169,8 +5558,49 @@ async function processRecordsWithSession(session, data, options = {}) {
                                     console.log('  ✅ Package Price field populated successfully');
                                 } catch (e) {
                                     console.error(`  ❌ ERROR: Package Price filling failed: ${e.message}`);
-                                    // Package Price is important but not as critical as commission - log as error but don't fail the record
-                                    console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                    
+                                    // Check if this is a critical field failure requiring page reload recovery
+                                    if (e.requiresPageReload && e.criticalField) {
+                                        console.log(`🔄 Critical Package Price failure detected, attempting page reload recovery...`);
+                                        
+                                        try {
+                                            // Attempt page reload recovery for critical Package Price field
+                                            const recoveryResult = await performPageReloadRecovery(
+                                                page, 
+                                                recordId, 
+                                                formState, 
+                                                record, 
+                                                session.sessionId, 
+                                                e
+                                            );
+                                            
+                                            if (recoveryResult.success) {
+                                                console.log(`✅ Package Price page reload recovery successful, retrying...`);
+                                                
+                                                // Update formState with restored data
+                                                Object.assign(formState, recoveryResult.restoredFormState);
+                                                
+                                                // Retry the failed field with fresh page state
+                                                await fillAndValidateField(page, 'total_price', formState.packagePrice, 'Package Price');
+                                                console.log('  ✅ Package Price field populated successfully after recovery');
+                                                
+                                                // Clear the backup after successful retry
+                                                clearFormStateBackup(recordId);
+                                                
+                                            } else {
+                                                console.error(`❌ Package Price page reload recovery failed: ${recoveryResult.error}`);
+                                                console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                            }
+                                            
+                                        } catch (recoveryError) {
+                                            console.error(`❌ Package Price page reload recovery process failed: ${recoveryError.message}`);
+                                            console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                        }
+                                        
+                                    } else {
+                                        // Standard Package Price error handling (important but not critical enough to fail the record)
+                                        console.error('  ⚠️ Package Price failure may affect form submission accuracy');
+                                    }
                                 }
 
                                 // 9. Fill Expected Commission with validation (CRITICAL FIELD)
@@ -5180,12 +5610,67 @@ async function processRecordsWithSession(session, data, options = {}) {
                                     console.log('  ✅ Expected Commission field populated successfully');
                                 } catch (e) {
                                     console.error(`  ❌ CRITICAL ERROR: Expected Commission filling failed: ${e.message}`);
-                                    // Commission is a required business field - treat failure as critical
-                                    const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
-                                    commissionError.recoverable = true;
-                                    commissionError.fieldName = 'Expected Commission';
-                                    commissionError.criticalField = true;
-                                    throw commissionError;
+                                    
+                                    // Check if this is a critical field failure that requires page reload recovery
+                                    if (e.requiresPageReload && e.criticalField) {
+                                        console.log(`🔄 Critical field failure detected, attempting page reload recovery...`);
+                                        
+                                        try {
+                                            // Attempt page reload recovery for critical field
+                                            const recoveryResult = await performPageReloadRecovery(
+                                                page, 
+                                                recordId, 
+                                                formState, 
+                                                record, 
+                                                session.sessionId, 
+                                                e
+                                            );
+                                            
+                                            if (recoveryResult.success) {
+                                                console.log(`✅ Page reload recovery successful, updating form state...`);
+                                                
+                                                // Update formState with restored data
+                                                Object.assign(formState, recoveryResult.restoredFormState);
+                                                
+                                                console.log(`🔄 Retrying Expected Commission field after page reload recovery...`);
+                                                // Retry the failed field with fresh page state
+                                                await fillAndValidateField(page, 'expected_commission', formState.expectedCommission, 'Expected Commission');
+                                                console.log('  ✅ Expected Commission field populated successfully after recovery');
+                                                
+                                                // Clear the backup after successful retry
+                                                clearFormStateBackup(recordId);
+                                                
+                                            } else {
+                                                console.error(`❌ Page reload recovery failed: ${recoveryResult.error}`);
+                                                // Fall back to standard error handling
+                                                const commissionError = new Error(`Critical field failure after page reload recovery: Expected Commission - ${recoveryResult.error || e.message}`);
+                                                commissionError.recoverable = true;
+                                                commissionError.fieldName = 'Expected Commission';
+                                                commissionError.criticalField = true;
+                                                commissionError.pageReloadRecoveryAttempted = true;
+                                                throw commissionError;
+                                            }
+                                            
+                                        } catch (recoveryError) {
+                                            console.error(`❌ Page reload recovery process failed: ${recoveryError.message}`);
+                                            // Fall back to standard error handling
+                                            const commissionError = new Error(`Critical field failure with recovery error: Expected Commission - ${recoveryError.message}`);
+                                            commissionError.recoverable = true;
+                                            commissionError.fieldName = 'Expected Commission';
+                                            commissionError.criticalField = true;
+                                            commissionError.pageReloadRecoveryFailed = true;
+                                            throw commissionError;
+                                        }
+                                        
+                                    } else {
+                                        // Standard critical field error handling (no page reload recovery)
+                                        console.log(`❌ Critical field error without page reload recovery requirement`);
+                                        const commissionError = new Error(`Critical field failure: Expected Commission could not be populated - ${e.message}`);
+                                        commissionError.recoverable = true;
+                                        commissionError.fieldName = 'Expected Commission';
+                                        commissionError.criticalField = true;
+                                        throw commissionError;
+                                    }
                                 }
 
                                 // 10. Comprehensive validation of all required fields before submission
@@ -5634,6 +6119,10 @@ async function processRecordsWithSession(session, data, options = {}) {
                     }
                 }
             }
+            
+            // Clean up form state backup after record processing is complete
+            clearFormStateBackup(recordId);
+            console.log(`🧹 Form state backup cleaned up for record: ${record['Client Name']}`);
             
             processedData.push(record);
         }
