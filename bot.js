@@ -531,13 +531,27 @@ async function loginAndProcess(data, options = {}) {
                             
                             // 11. Submit the form with human-like interaction
                             console.log('  - Submitting form...');
-                            await submitFormHumanLike(page);
+                            const submitResult = await submitFormHumanLike(page);
 
-                            // Extract invoice number using robust polling and retry logic
-                            await extractInvoiceNumberRobust(page, record);
+                            // Check if submission was successful
+                            if (!submitResult.success) {
+                                throw new Error('Form submission failed');
+                            }
+
+                            // Extract invoice number using robust polling and retry logic (popup first, then fallback)
+                            const invoiceExtracted = await extractInvoiceNumberRobust(page, record, submitResult.popupInvoice);
 
                             record.status = 'submitted';
                             record.Submitted = 'Submitted';
+                            
+                            // Apply fallback invoice number if extraction failed but submission was successful
+                            if (!invoiceExtracted && (
+                                record.InvoiceNumber === 'EXTRACTION_FAILED_TITLE_UPDATED' ||
+                                record.InvoiceNumber === 'EXTRACTION_FAILED_NO_TITLE_CHANGE'
+                            )) {
+                                record.InvoiceNumber = 'No invoice number but submitted';
+                                console.log('  📝 Applied fallback invoice number: Form submitted successfully but no invoice detected');
+                            }
                         }
                         }
                     } else {
@@ -2505,8 +2519,24 @@ async function retryClientCreationWithRecovery(page, firstName, lastName, client
 }
 
 // Helper function to extract invoice number with robust polling and retry logic
-async function extractInvoiceNumberRobust(page, record, maxRetries = 10, baseWaitMs = 3000) {
+async function extractInvoiceNumberRobust(page, record, popupResult = null, maxRetries = 5, baseWaitMs = 3000) {
     console.log('  🔍 Starting robust invoice number extraction...');
+    
+    // Strategy 0: Use popup extraction result as primary method
+    if (popupResult && popupResult.success && popupResult.invoiceNumber) {
+        record.InvoiceNumber = popupResult.invoiceNumber;
+        console.log(`  🎉 Primary popup extraction successful: ${popupResult.invoiceNumber}`);
+        console.log(`  📋 Popup message was: "${popupResult.popupText}"`);
+        return true;
+    }
+    
+    if (popupResult && popupResult.popupText) {
+        console.log(`  ⚠️  Popup was detected but no invoice extracted. Text: "${popupResult.popupText}"`);
+    } else if (popupResult) {
+        console.log(`  ⚠️  Popup extraction failed: ${popupResult.error || 'Unknown error'}`);
+    }
+    
+    console.log('  🔄 Falling back to reservation title extraction...');
     
     // Configuration for polling and retry
     const config = {
@@ -2616,11 +2646,13 @@ async function extractInvoiceNumberRobust(page, record, maxRetries = 10, baseWai
         }
         
         // No invoice number found after all strategies
+        // Set a temporary value that indicates extraction failed
+        // The calling code will determine the appropriate fallback based on submission success
         if (titleChangeDetected) {
-            record.InvoiceNumber = 'Not Generated - Title Updated';
+            record.InvoiceNumber = 'EXTRACTION_FAILED_TITLE_UPDATED';
             console.log('  ⚠️  Title was updated but no invoice number pattern found');
         } else {
-            record.InvoiceNumber = 'Not Generated - No Title Change';
+            record.InvoiceNumber = 'EXTRACTION_FAILED_NO_TITLE_CHANGE';
             console.log('  ⚠️  No title changes detected after submission');
         }
         
@@ -2630,6 +2662,88 @@ async function extractInvoiceNumberRobust(page, record, maxRetries = 10, baseWai
         console.error(`  💥 Error during robust invoice extraction: ${error.message}`);
         record.InvoiceNumber = 'Error - Extraction Failed';
         return false;
+    }
+}
+
+// Helper function to extract invoice number from success popup
+async function extractInvoiceFromPopup(page, timeoutMs = 8000) {
+    console.log('  🎯 Attempting to extract invoice number from success popup...');
+    
+    try {
+        // Wait for the popup to appear
+        await page.waitForSelector('.popupbox', { timeout: timeoutMs });
+        console.log('  ✅ Success popup detected');
+        
+        // Try to find the popup message with invoice number
+        const popupSelectors = [
+            '.popupbox p#zc-dialog-label',           // Primary selector from HTML structure
+            '.popupbox .alertMsg p',                 // Alternative selector
+            '.popupConentContainer p',               // Fallback selector
+            '.alert-popup p'                         // Another fallback
+        ];
+        
+        let invoiceNumber = null;
+        let popupText = '';
+        
+        for (const selector of popupSelectors) {
+            try {
+                const element = await page.$(selector);
+                if (element) {
+                    popupText = await element.textContent();
+                    console.log(`  📋 Found popup text: "${popupText}"`);
+                    
+                    // Extract invoice number from popup text
+                    // Looking for pattern: "Your Quick Submit Invoice # 201459297 was successfully created."
+                    const popupPatterns = [
+                        /Your\s+Quick\s+Submit\s+Invoice\s*#\s*(\d+)/i,
+                        /Invoice\s*#\s*(\d+)\s+was\s+successfully\s+created/i,
+                        /Invoice\s*#\s*(\d+)/i,
+                        /successfully\s+created.*?(\d{6,})/i,
+                        /#\s*(\d{6,})/
+                    ];
+                    
+                    for (const pattern of popupPatterns) {
+                        const match = popupText.match(pattern);
+                        if (match && match[1]) {
+                            invoiceNumber = match[1];
+                            console.log(`  🎉 Extracted invoice number from popup: ${invoiceNumber}`);
+                            break;
+                        }
+                    }
+                    
+                    if (invoiceNumber) {
+                        break;
+                    }
+                }
+            } catch (selectorError) {
+                console.log(`  ⚠️  Could not access selector ${selector}: ${selectorError.message}`);
+                continue;
+            }
+        }
+        
+        if (invoiceNumber) {
+            return {
+                success: true,
+                invoiceNumber: invoiceNumber,
+                popupText: popupText
+            };
+        } else {
+            console.log('  ❌ No invoice number found in popup text');
+            return {
+                success: false,
+                invoiceNumber: null,
+                popupText: popupText
+            };
+        }
+        
+    } catch (error) {
+        console.log(`  ❌ Error extracting invoice from popup: ${error.message}`);
+        return {
+            success: false,
+            invoiceNumber: null,
+            popupText: '',
+            error: error.message
+        };
     }
 }
 
@@ -2738,13 +2852,24 @@ async function submitFormHumanLike(page, maxRetries = 3) {
             // Handle the confirmation popup
             try {
                 await page.waitForSelector('#Ok', { timeout: 8000 });
-                await page.waitForTimeout(500 + Math.random() * 500); // Human-like pause before clicking OK
+                console.log('    ✅ Confirmation popup detected');
+                
+                // Extract invoice number from popup before clicking OK
+                const popupResult = await extractInvoiceFromPopup(page, 2000);
+                
+                // Human-like pause before clicking OK
+                await page.waitForTimeout(500 + Math.random() * 500);
                 await page.click('#Ok');
                 console.log('    ✅ Clicked OK on confirmation popup');
                 
                 // Wait for page to process the submission
                 await page.waitForTimeout(2000 + Math.random() * 1000);
-                return true;
+                
+                // Return both success status and popup extraction result
+                return {
+                    success: true,
+                    popupInvoice: popupResult
+                };
                 
             } catch (e) {
                 console.log('    ⚠️  No confirmation popup appeared - form may have submitted without popup');
@@ -2755,7 +2880,10 @@ async function submitFormHumanLike(page, maxRetries = 3) {
                     const currentUrl = page.url();
                     if (currentUrl.includes('CORE')) {
                         console.log('    ✅ Form appears to have submitted successfully');
-                        return true;
+                        return {
+                            success: true,
+                            popupInvoice: { success: false, invoiceNumber: null, popupText: '', error: 'No popup appeared' }
+                        };
                     }
                 } catch (urlError) {
                     console.log('    ⚠️  Could not verify form submission by URL');
@@ -2763,19 +2891,28 @@ async function submitFormHumanLike(page, maxRetries = 3) {
                 
                 if (attempt === maxRetries) {
                     console.log('    ❌ No confirmation popup found after submit');
-                    return false;
+                    return {
+                        success: false,
+                        popupInvoice: { success: false, invoiceNumber: null, popupText: '', error: 'No confirmation popup found' }
+                    };
                 }
             }
             
         } catch (error) {
             console.log(`    💥 Error submitting form (attempt ${attempt}): ${error.message}`);
             if (attempt === maxRetries) {
-                return false;
+                return {
+                    success: false,
+                    popupInvoice: { success: false, invoiceNumber: null, popupText: '', error: `Submit error: ${error.message}` }
+                };
             }
             await page.waitForTimeout(2000); // Wait before retry
         }
     }
-    return false;
+    return {
+        success: false,
+        popupInvoice: { success: false, invoiceNumber: null, popupText: '', error: 'Max retries exceeded' }
+    };
 }
 
 // Helper function to verify all form fields are populated correctly
@@ -4314,13 +4451,27 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 
                                 // 11. Submit the form with human-like interaction
                                 console.log('  - Submitting form...');
-                                await submitFormHumanLike(page);
+                                const submitResult = await submitFormHumanLike(page);
 
-                                // Extract invoice number using robust polling and retry logic
-                                await extractInvoiceNumberRobust(page, record);
+                                // Check if submission was successful
+                                if (!submitResult.success) {
+                                    throw new Error('Form submission failed');
+                                }
+
+                                // Extract invoice number using robust polling and retry logic (popup first, then fallback)
+                                const invoiceExtracted = await extractInvoiceNumberRobust(page, record, submitResult.popupInvoice);
 
                                 record.status = 'submitted';
                                 record.Submitted = 'Submitted';
+                                
+                                // Apply fallback invoice number if extraction failed but submission was successful
+                                if (!invoiceExtracted && (
+                                    record.InvoiceNumber === 'EXTRACTION_FAILED_TITLE_UPDATED' ||
+                                    record.InvoiceNumber === 'EXTRACTION_FAILED_NO_TITLE_CHANGE'
+                                )) {
+                                    record.InvoiceNumber = 'No invoice number but submitted';
+                                    console.log('  📝 Applied fallback invoice number: Form submitted successfully but no invoice detected');
+                                }
                             }
                             }
                         } else {
