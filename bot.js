@@ -533,32 +533,8 @@ async function loginAndProcess(data, options = {}) {
                             console.log('  - Submitting form...');
                             await submitFormHumanLike(page);
 
-                            // Extract invoice number from reservation title
-                            try {
-                                const titleSelector = await findDynamicSelector(page, 'reservation_title');
-                                if (titleSelector) {
-                                    const reservationTitleValue = await page.inputValue(titleSelector);
-                                    console.log(`  - Reservation title after submit: ${reservationTitleValue}`);
-                                    
-                                    // Extract invoice number using regex (e.g., "Tour FIT - Invoice # 201425570 - Copy")
-                                    const invoiceMatch = reservationTitleValue.match(/Invoice\s*#\s*(\d+)/i);
-                                    const invoiceNumber = invoiceMatch ? invoiceMatch[1] : null;
-                                    
-                                    if (invoiceNumber) {
-                                        record.InvoiceNumber = invoiceNumber;
-                                        console.log(`  - Extracted invoice number: ${invoiceNumber}`);
-                                    } else {
-                                        record.InvoiceNumber = 'Not Generated';
-                                        console.log('  - No invoice number found in reservation title.');
-                                    }
-                                } else {
-                                    record.InvoiceNumber = 'Not Generated';
-                                    console.log('  - Could not find reservation title field to extract invoice number.');
-                                }
-                            } catch (e) {
-                                console.error('  - Error extracting invoice number:', e);
-                                record.InvoiceNumber = 'Error';
-                            }
+                            // Extract invoice number using robust polling and retry logic
+                            await extractInvoiceNumberRobust(page, record);
 
                             record.status = 'submitted';
                             record.Submitted = 'Submitted';
@@ -2528,6 +2504,218 @@ async function retryClientCreationWithRecovery(page, firstName, lastName, client
     }
 }
 
+// Helper function to extract invoice number with robust polling and retry logic
+async function extractInvoiceNumberRobust(page, record, maxRetries = 10, baseWaitMs = 3000) {
+    console.log('  🔍 Starting robust invoice number extraction...');
+    
+    // Configuration for polling and retry
+    const config = {
+        maxRetries,
+        baseWaitMs,
+        maxWaitMs: 15000,
+        exponentialBackoffFactor: 1.5,
+        domChangeTimeout: 30000
+    };
+    
+    let lastTitleValue = '';
+    let titleChangeDetected = false;
+    
+    try {
+        // First, get the initial title value
+        const titleSelector = await findDynamicSelector(page, 'reservation_title');
+        if (!titleSelector) {
+            console.log('  ❌ Could not find reservation title field selector');
+            record.InvoiceNumber = 'Error - No Title Field';
+            return false;
+        }
+        
+        const initialTitleValue = await page.inputValue(titleSelector);
+        lastTitleValue = initialTitleValue;
+        console.log(`  📋 Initial reservation title: "${initialTitleValue}"`);
+        
+        // Strategy 1: DOM Change Detection with Polling
+        console.log('  🔄 Waiting for DOM changes in reservation title field...');
+        
+        for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
+            const waitTime = Math.min(
+                config.baseWaitMs * Math.pow(config.exponentialBackoffFactor, attempt - 1),
+                config.maxWaitMs
+            );
+            
+            console.log(`  ⏳ Polling attempt ${attempt}/${config.maxRetries} (waiting ${waitTime}ms)...`);
+            await page.waitForTimeout(waitTime);
+            
+            try {
+                // Get current title value
+                const currentTitleValue = await page.inputValue(titleSelector);
+                console.log(`  📋 Current reservation title: "${currentTitleValue}"`);
+                
+                // Check if the title has changed from initial value
+                if (currentTitleValue !== lastTitleValue) {
+                    console.log(`  ✅ Title change detected: "${lastTitleValue}" → "${currentTitleValue}"`);
+                    titleChangeDetected = true;
+                    lastTitleValue = currentTitleValue;
+                }
+                
+                // Try to extract invoice number with multiple patterns
+                const invoiceNumber = extractInvoiceFromText(currentTitleValue);
+                
+                if (invoiceNumber) {
+                    record.InvoiceNumber = invoiceNumber;
+                    console.log(`  🎉 Successfully extracted invoice number: ${invoiceNumber} (attempt ${attempt})`);
+                    return true;
+                }
+                
+                // If we detected a title change but still no invoice, give it more time
+                if (titleChangeDetected && attempt < config.maxRetries) {
+                    console.log('  🔄 Title changed but no invoice found yet, continuing to poll...');
+                    continue;
+                }
+                
+            } catch (pollError) {
+                console.log(`  ⚠️  Polling attempt ${attempt} failed: ${pollError.message}`);
+                if (attempt === config.maxRetries) {
+                    throw pollError;
+                }
+            }
+        }
+        
+        // Strategy 2: Fallback with page refresh if no invoice found
+        console.log('  🔄 Primary extraction failed, trying fallback strategies...');
+        
+        // Wait a bit more and try one more time
+        console.log('  ⏳ Final wait before fallback attempt...');
+        await page.waitForTimeout(5000);
+        
+        const finalTitleValue = await page.inputValue(titleSelector);
+        console.log(`  📋 Final reservation title check: "${finalTitleValue}"`);
+        
+        const finalInvoiceNumber = extractInvoiceFromText(finalTitleValue);
+        if (finalInvoiceNumber) {
+            record.InvoiceNumber = finalInvoiceNumber;
+            console.log(`  🎉 Fallback extraction successful: ${finalInvoiceNumber}`);
+            return true;
+        }
+        
+        // Strategy 3: Check if form is still processing
+        console.log('  🔍 Checking if form is still processing...');
+        const isProcessing = await checkIfFormProcessing(page);
+        
+        if (isProcessing) {
+            console.log('  ⏳ Form appears to be still processing, extending wait time...');
+            await page.waitForTimeout(10000);
+            
+            const processingTitleValue = await page.inputValue(titleSelector);
+            const processingInvoiceNumber = extractInvoiceFromText(processingTitleValue);
+            
+            if (processingInvoiceNumber) {
+                record.InvoiceNumber = processingInvoiceNumber;
+                console.log(`  🎉 Post-processing extraction successful: ${processingInvoiceNumber}`);
+                return true;
+            }
+        }
+        
+        // No invoice number found after all strategies
+        if (titleChangeDetected) {
+            record.InvoiceNumber = 'Not Generated - Title Updated';
+            console.log('  ⚠️  Title was updated but no invoice number pattern found');
+        } else {
+            record.InvoiceNumber = 'Not Generated - No Title Change';
+            console.log('  ⚠️  No title changes detected after submission');
+        }
+        
+        return false;
+        
+    } catch (error) {
+        console.error(`  💥 Error during robust invoice extraction: ${error.message}`);
+        record.InvoiceNumber = 'Error - Extraction Failed';
+        return false;
+    }
+}
+
+// Helper function to extract invoice number from text using multiple patterns
+function extractInvoiceFromText(text) {
+    if (!text || typeof text !== 'string') {
+        return null;
+    }
+    
+    // Multiple regex patterns to catch different invoice number formats
+    const patterns = [
+        /Invoice\s*#\s*(\d+)/i,                    // Standard: Invoice # 123456
+        /Invoice\s*:\s*(\d+)/i,                    // Alternative: Invoice: 123456
+        /Invoice\s*Number\s*:?\s*(\d+)/i,          // Verbose: Invoice Number: 123456
+        /Inv\s*#?\s*:?\s*(\d+)/i,                  // Short: Inv # 123456
+        /#\s*(\d{6,})/,                            // Generic: # 123456 (6+ digits)
+        /(?:^|\s)(\d{8,})(?:\s|$)/,               // Standalone 8+ digit number
+        /Invoice\s+(\d+)/i,                        // Simple: Invoice 123456
+        /Booking\s*#\s*(\d+)/i                     // Booking reference: Booking # 123456
+    ];
+    
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            const invoiceNumber = match[1];
+            // Validate that it's a reasonable invoice number (6-12 digits)
+            if (invoiceNumber.length >= 6 && invoiceNumber.length <= 12) {
+                return invoiceNumber;
+            }
+        }
+    }
+    
+    return null;
+}
+
+// Helper function to check if form is still processing
+async function checkIfFormProcessing(page) {
+    try {
+        // Check for common processing indicators
+        const processingIndicators = [
+            'div[class*="loading"]',
+            'div[class*="processing"]',
+            'div[class*="spinner"]',
+            '.loader',
+            '[aria-label*="loading"]',
+            '[aria-label*="processing"]'
+        ];
+        
+        for (const indicator of processingIndicators) {
+            try {
+                const element = await page.waitForSelector(indicator, { timeout: 1000 });
+                if (element) {
+                    const isVisible = await element.isVisible();
+                    if (isVisible) {
+                        console.log(`  🔄 Processing indicator found: ${indicator}`);
+                        return true;
+                    }
+                }
+            } catch (e) {
+                // Indicator not found, continue checking
+                continue;
+            }
+        }
+        
+        // Check if submit button is disabled (indicating processing)
+        try {
+            const submitButton = await page.$('input[name="Submit_and_Duplicate"]');
+            if (submitButton) {
+                const isDisabled = await submitButton.getAttribute('disabled');
+                if (isDisabled !== null) {
+                    console.log('  🔄 Submit button is disabled, indicating processing');
+                    return true;
+                }
+            }
+        } catch (e) {
+            // Submit button check failed, continue
+        }
+        
+        return false;
+        
+    } catch (error) {
+        console.log(`  ⚠️  Error checking processing status: ${error.message}`);
+        return false;
+    }
+}
+
 // Helper function to submit form with human-like interaction and validation
 async function submitFormHumanLike(page, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -4128,32 +4316,8 @@ async function processRecordsWithSession(session, data, options = {}) {
                                 console.log('  - Submitting form...');
                                 await submitFormHumanLike(page);
 
-                                // Extract invoice number from reservation title
-                                try {
-                                    const titleSelector = await findDynamicSelector(page, 'reservation_title');
-                                    if (titleSelector) {
-                                        const reservationTitleValue = await page.inputValue(titleSelector);
-                                        console.log(`  - Reservation title after submit: ${reservationTitleValue}`);
-                                        
-                                        // Extract invoice number using regex (e.g., "Tour FIT - Invoice # 201425570 - Copy")
-                                        const invoiceMatch = reservationTitleValue.match(/Invoice\s*#\s*(\d+)/i);
-                                        const invoiceNumber = invoiceMatch ? invoiceMatch[1] : null;
-                                        
-                                        if (invoiceNumber) {
-                                            record.InvoiceNumber = invoiceNumber;
-                                            console.log(`  - Extracted invoice number: ${invoiceNumber}`);
-                                        } else {
-                                            record.InvoiceNumber = 'Not Generated';
-                                            console.log('  - No invoice number found in reservation title.');
-                                        }
-                                    } else {
-                                        record.InvoiceNumber = 'Not Generated';
-                                        console.log('  - Could not find reservation title field to extract invoice number.');
-                                    }
-                                } catch (e) {
-                                    console.error('  - Error extracting invoice number:', e);
-                                    record.InvoiceNumber = 'Error';
-                                }
+                                // Extract invoice number using robust polling and retry logic
+                                await extractInvoiceNumberRobust(page, record);
 
                                 record.status = 'submitted';
                                 record.Submitted = 'Submitted';
