@@ -138,7 +138,7 @@ app.post('/trigger-bot-async', async (req, res) => {
 
         // Extract options from query parameters
         const options = {
-            batchSize: parseInt(req.query.batchSize) || 50,
+            batchSize: parseInt(req.query.batchSize) || 25,
             maxRetries: parseInt(req.query.maxRetries) || 3,
             timeout: parseInt(req.query.timeout) || 300000
         };

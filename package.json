@@ -4,7 +4,7 @@
   "description": "A bot to submit data to TPI Suitcase, triggered by an API.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --expose-gc index.js",
     "dev": "nodemon index.js",
     "build": "echo \"No build step required for Node.js\"",
     "docker:build": "docker build -t tpi-submit-bot .",

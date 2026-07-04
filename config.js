@@ -102,12 +102,13 @@ const config = {
     // Job Management Configuration
     job: {
         maxConcurrentJobs: parseIntEnv('MAX_CONCURRENT_JOBS', 1),
-        batchSize: parseIntEnv('BATCH_SIZE', 50),
+        batchSize: parseIntEnv('BATCH_SIZE', 25), // Lower batch = smaller peak live-record footprint (memory)
         maxJobRetries: parseIntEnv('MAX_JOB_RETRIES', 3),
         jobTimeout: parseIntEnv('JOB_TIMEOUT_MS', 1800000), // 30 minutes
         batchTimeout: parseIntEnv('BATCH_TIMEOUT_MS', 300000), // 5 minutes per batch
         retryDelay: parseIntEnv('JOB_RETRY_DELAY_MS', 10000),
-        cleanupInterval: parseIntEnv('JOB_CLEANUP_INTERVAL_MS', 86400000) // 24 hours
+        cleanupInterval: parseIntEnv('JOB_CLEANUP_INTERVAL_MS', 86400000), // 24 hours
+        maxAge: parseIntEnv('JOB_MAX_AGE_MS', 7200000) // 2h: prune terminal jobs older than this
     },
 
     // Memory Monitoring Configuration

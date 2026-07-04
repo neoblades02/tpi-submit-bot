@@ -9,6 +9,16 @@ const { discordNotifier } = require('./discordNotifier');
 const { autoRestartManager } = require('./circuitBreaker');
 const { ErrorClassifier, BrowserLaunchError, BrowserCrashError, BrowserSessionTerminatedError, CircuitBreakerError } = require('./errors');
 const { errorHandler } = require('./errorHandler');
+const { browserManager } = require('./browserManager');
+
+/**
+ * Truncate an error stack to its first few lines so long-lived job records
+ * don't retain multi-KB stack strings (memory).
+ */
+function truncateStack(stack) {
+    if (!stack) return null;
+    return String(stack).split('\n').slice(0, 3).join('\n');
+}
 
 class JobManager extends EventEmitter {
     constructor() {
@@ -20,7 +30,18 @@ class JobManager extends EventEmitter {
         this.statusWebhookUrl = config.status.webhookUrl;
         this.botFunctions = null; // Injected dependencies to break circular require
         this.eventListeners = new Map(); // Track event listeners for cleanup
-        
+
+        // Periodically prune terminal-state jobs so this.jobs doesn't grow unbounded (memory).
+        // Runs hourly and only removes completed/failed/cancelled jobs older than config.job.maxAge.
+        this._jobCleanupTimer = setInterval(() => {
+            try {
+                this.cleanupOldJobs(config.job.maxAge);
+            } catch (e) {
+                console.error('Job cleanup error:', e.message);
+            }
+        }, 60 * 60 * 1000);
+        if (this._jobCleanupTimer.unref) this._jobCleanupTimer.unref();
+
         // Initialize monitoring and stability systems
         this.initializeStabilitySystems();
         
@@ -499,7 +520,7 @@ class JobManager extends EventEmitter {
             completedAt: null,
             estimatedDuration: null,
             options: {
-                batchSize: options.batchSize || 50,
+                batchSize: options.batchSize || 25,
                 maxRetries: options.maxRetries || 3,
                 timeout: options.timeout || 300000, // 5 minutes per batch
                 ...options
@@ -627,7 +648,7 @@ class JobManager extends EventEmitter {
                     status: 'queue_processing_failed',
                     message: `Queue processing failed: ${error.message}`,
                     error: error.message,
-                    errors: job.errors.length > 0 ? job.errors : null
+                    errors: job.errors.length > 0 ? job.errors.slice(-20) : null
                 });
             }
         }
@@ -669,6 +690,9 @@ class JobManager extends EventEmitter {
                 }];
                 batches.push(batchData);
             }
+
+            // Raw input rows are now copied into batches; release the full input array (memory).
+            job.data = null;
 
             console.log(`Processing ${batches.length} batches of ${batchSize} records each`);
 
@@ -766,7 +790,7 @@ class JobManager extends EventEmitter {
                         });
                         
                         // Update job progress
-                        job.results = job.results.concat(records);
+                        job.results.push(...records);
                         job.progress.completed += records.filter(r => r.status === 'submitted').length;
                         job.progress.failed += records.filter(r => r.status === 'error' || r.status === 'not submitted').length;
                         job.progress.percentage = Math.round((job.progress.completed + job.progress.failed) / job.progress.total * 100);
@@ -817,7 +841,7 @@ class JobManager extends EventEmitter {
                             errorType: classifiedBatchError.name,
                             recoverable: classifiedBatchError.recoverable || false,
                             retryStrategy: classifiedBatchError.retryStrategy,
-                            stack: batchError.stack || null
+                            stack: truncateStack(batchError.stack)
                         });
                         
                         // Get retry recommendation based on error type
@@ -869,7 +893,10 @@ class JobManager extends EventEmitter {
                                     if (session && session.browser) {
                                         try {
                                             if (session.browser.isConnected()) {
-                                                await session.browser.close();
+                                                const closed = await browserManager.closeBrowser(session.sessionId, 'session_terminated');
+                                                if (!closed && session.browser.isConnected()) {
+                                                    await session.browser.close();
+                                                }
                                                 console.log('🔐 Closed browser session');
                                             } else {
                                                 console.log('ℹ️ Browser session already disconnected');
@@ -884,7 +911,10 @@ class JobManager extends EventEmitter {
                                     
                                     if (session && session.browser) {
                                         try {
-                                            await session.browser.close();
+                                            const closed = await browserManager.closeBrowser(session.sessionId, 'crash_recovery');
+                                            if (!closed && session.browser.isConnected && session.browser.isConnected()) {
+                                                await session.browser.close();
+                                            }
                                             console.log('🔐 Closed crashed browser session');
                                         } catch (closeError) {
                                             console.log('⚠️ Could not close crashed browser (already closed)');
@@ -959,7 +989,7 @@ class JobManager extends EventEmitter {
                                 });
                                 
                                 // Update job progress with retry results
-                                job.results = job.results.concat(retryRecords);
+                                job.results.push(...retryRecords);
                                 job.progress.completed += retryRecords.filter(r => r.status === 'submitted').length;
                                 job.progress.failed += retryRecords.filter(r => r.status === 'error' || r.status === 'not submitted').length;
                                 job.progress.percentage = Math.round((job.progress.completed + job.progress.failed) / job.progress.total * 100);
@@ -995,7 +1025,7 @@ class JobManager extends EventEmitter {
                                     message: `Recovery failed: ${recoveryError.message}`,
                                     timestamp: new Date().toISOString(),
                                     context: 'crash_recovery',
-                                    stack: recoveryError.stack || null
+                                    stack: truncateStack(recoveryError.stack)
                                 });
                                 
                                 // Classify the recovery error and send enhanced failure update
@@ -1060,7 +1090,7 @@ class JobManager extends EventEmitter {
                 message: `Job ${job.status}! Processed: ${job.progress.completed}, Failed: ${job.progress.failed}`,
                 completedAt: job.completedAt,
                 duration: Date.now() - new Date(job.startedAt).getTime(),
-                errors: job.errors.length > 0 ? job.errors : null
+                errors: job.errors.length > 0 ? job.errors.slice(-20) : null
             });
 
             // Send consolidated webhook with all results when job completes
@@ -1085,7 +1115,7 @@ class JobManager extends EventEmitter {
                         message: `Webhook delivery failed: ${webhookError.message}`,
                         timestamp: new Date().toISOString(),
                         context: 'webhook_delivery',
-                        stack: webhookError.stack || null
+                        stack: truncateStack(webhookError.stack)
                     });
                     
                     // Send webhook error status update with all errors for logging
@@ -1093,7 +1123,7 @@ class JobManager extends EventEmitter {
                         status: 'webhook_error',
                         message: `Failed to send consolidated webhook: ${webhookError.message}`,
                         error: webhookError.message,
-                        errors: job.errors.length > 0 ? job.errors : null
+                        errors: job.errors.length > 0 ? job.errors.slice(-20) : null
                     });
                 }
             }
@@ -1112,7 +1142,7 @@ class JobManager extends EventEmitter {
                     batchRetries: job.stats.batchRetries,
                     processingDuration: Date.now() - new Date(job.startedAt).getTime()
                 },
-                errors: job.errors.length > 0 ? job.errors : null
+                errors: job.errors.length > 0 ? job.errors.slice(-20) : null
             });
 
             // Mark job as inactive to allow browser timeout
@@ -1121,7 +1151,10 @@ class JobManager extends EventEmitter {
             // Now that all post-processing is complete, safely close the browser session
             if (session && session.browser) {
                 try {
-                    await session.browser.close();
+                    const closed = await browserManager.closeBrowser(session.sessionId, 'job_completed');
+                    if (!closed && session.browser.isConnected()) {
+                        await session.browser.close();
+                    }
                     console.log('🔐 Browser session closed after job post-processing completion');
                 } catch (browserCloseError) {
                     console.log(`⚠️ Error closing browser session: ${browserCloseError.message}`);
@@ -1134,7 +1167,7 @@ class JobManager extends EventEmitter {
                 message: error.message,
                 timestamp: new Date().toISOString(),
                 context: 'job_processing',
-                stack: error.stack || null
+                stack: truncateStack(error.stack)
             });
             job.completedAt = new Date().toISOString();
             
@@ -1146,7 +1179,7 @@ class JobManager extends EventEmitter {
                 message: `Job failed: ${error.message}`,
                 completedAt: job.completedAt,
                 error: error.message,
-                errors: job.errors.length > 0 ? job.errors : null
+                errors: job.errors.length > 0 ? job.errors.slice(-20) : null
             });
 
             // Mark job as inactive to allow browser timeout
@@ -1155,7 +1188,10 @@ class JobManager extends EventEmitter {
             // Close browser session on job failure
             if (session && session.browser) {
                 try {
-                    await session.browser.close();
+                    const closed = await browserManager.closeBrowser(session.sessionId, 'job_failed');
+                    if (!closed && session.browser.isConnected()) {
+                        await session.browser.close();
+                    }
                     console.log('🔐 Browser session closed after job failure');
                 } catch (browserCloseError) {
                     console.log(`⚠️ Error closing browser session after job failure: ${browserCloseError.message}`);
@@ -1272,7 +1308,13 @@ class JobManager extends EventEmitter {
      */
     async cleanup() {
         console.log('🧹 JobManager cleanup starting...');
-        
+
+        // Stop the periodic job-pruning timer
+        if (this._jobCleanupTimer) {
+            clearInterval(this._jobCleanupTimer);
+            this._jobCleanupTimer = null;
+        }
+
         try {
             // Send shutdown notification
             await discordNotifier.sendStatusNotification('job_manager_shutting_down',

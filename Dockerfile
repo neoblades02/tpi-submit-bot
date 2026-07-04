@@ -34,4 +34,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:3001/health || exit 1
 
 # Run the web service on container startup
-CMD ["node", "index.js"]
+CMD ["node", "--expose-gc", "index.js"]

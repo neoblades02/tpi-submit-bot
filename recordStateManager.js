@@ -85,7 +85,8 @@ class RecordStateManager {
             type: error.type || 'unknown',
             context: context,
             timestamp: new Date().toISOString(),
-            stack: error.stack,
+            // Keep only the first few stack lines; full stacks are never read and bloat retained state (memory)
+            stack: error.stack ? String(error.stack).split('\n').slice(0, 3).join('\n') : undefined,
             recoverable: error.recoverable !== false,
             attempt: recordState.currentAttempt
         };
@@ -341,6 +342,34 @@ class RecordStateManager {
             });
         }
         return failed;
+    }
+
+    /**
+     * Prune all record state for a finished session (memory management).
+     * Safe to call once a batch/session has finished processing — the live
+     * processing path does not read record state after it returns, so this
+     * keeps the state maps bounded to the in-flight batch instead of growing
+     * one entry per record for the whole job.
+     */
+    pruneSession(sessionId) {
+        const recordIds = this.sessionRecords.get(sessionId);
+        if (!recordIds) {
+            return 0;
+        }
+        let removed = 0;
+        for (const recordId of recordIds) {
+            this.recordStates.delete(recordId);
+            this.failedRecords.delete(recordId);
+            // Drop error-history entries for this record (keys are `${recordId}-${type}`)
+            for (const key of this.errorHistory.keys()) {
+                if (key === recordId || key.startsWith(`${recordId}-`)) {
+                    this.errorHistory.delete(key);
+                }
+            }
+            removed++;
+        }
+        this.sessionRecords.delete(sessionId);
+        return removed;
     }
 
     /**

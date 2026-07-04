@@ -6154,6 +6154,13 @@ async function processRecordsWithSession(session, data, options = {}) {
         // Cleanup throttle history when session processing ends
         if (session && session.sessionId) {
             cleanupThrottleHistory(session.sessionId, 'session_processing_complete');
+            // Prune per-record state for this finished batch so the state maps stay
+            // bounded to the in-flight batch instead of growing across the whole job (memory).
+            try {
+                recordStateManager.pruneSession(session.sessionId);
+            } catch (e) {
+                console.log('⚠️ recordStateManager.pruneSession failed:', e.message);
+            }
         }
     }
 }
